@@ -49,6 +49,18 @@ the size to settle first. It used to replace the worker, which cost 1.845 s and
 a veil over the picture; in place it is 0.112 s and nothing goes dark. A move
 only moves the windows.
 
+Picking another window takes the same road when nothing else has to change
+(#148, #157). The probe that measures the new window has already re-pointed the
+running worker's capture at it (`WGCW`), so what is left is what a resize does:
+`RNSZ`, the guides and the motion and grey channels (`MOTS`, `GRAY`), `OUTS`,
+`WNDO` and the overlay's size. Only from one window to another in window mode
+with NR on (with NR off the worker's capture is closed), on the same monitor
+(another monitor can be another HDR state and DPI, which the worker reads at
+its start) and with no recording running (a recording is sized and paced for
+the window it began on). From the desktop, to another monitor or during a
+recording it is the full rebuild - a new process and NGX init, 17-38 s in one
+report with a big model on a busy card, against under a second in place.
+
 ## Recording (Num0)
 
 `Num0` starts/stops recording of the **NR-processed frame** into
@@ -102,6 +114,18 @@ the card (`native/gpu_recorder.cpp`):
   noticed from the client's side. Either way the client publishes what reached
   the disk and says the recording was **cut short**. If the GPU recorder cannot
   start at all, the CPU path records instead.
+- **The pointer is in the file** (`native/cursor.inl`, #131). The capture
+  never holds it - Desktop Duplication hands it over apart from the picture,
+  window capture runs with it off, the overlay shows the real one - so it is
+  drawn on the copy that goes to the encoder only, never on the screen, Spout
+  or a screenshot. The shape is the system pointer's own (any size, colour or
+  monochrome), read once per `HCURSOR` by `DrawIconEx` over black and over
+  white (the difference is the coverage; inverting pixels come out white),
+  uploaded premultiplied when it changes and blended by a compute pass at the
+  pointer's position on the captured monitor or window. A hidden pointer (a
+  game that captures the mouse) is not drawn; a worker with no capture of its
+  own (the file converter) and an HDR10 recording (its PQ code values would
+  make a white pointer 10 000 nits) go without one.
 - **The open menu is not in the file:** it is a separate window the worker
   never sees. Switch Record on the GPU off to have it drawn in.
 
@@ -120,8 +144,8 @@ cost no measurable frame rate and the CPU path at 30 fps cost 6%.
 ### On the CPU (Record on the GPU off, and the fallback)
 
 The client asks the worker for the pixels of each recorded frame
-(`FRAME_FLAG_WANT_PIXELS`), draws the open menu onto them and encodes them
-itself:
+(`FRAME_FLAG_WANT_PIXELS`), draws the open menu and the pointer onto them and
+encodes them itself:
 
 - AV1 NVENC hardware encoding through PyAV (HEVC or H.264 on cards without an
   AV1 encoder) at your desktop resolution, **30 fps**,
@@ -137,12 +161,14 @@ itself:
   the worker, and at 60 fps that measured ~36% of the frame rate (101 -> 65
   FPS). Half the rate is half the cost, and each frame is the same picture. The
   timestamps come from the clock, so the file still plays at real speed.
-- **Only the open menu is burned into the recording** — nothing else. Our
-  own layer is hidden from external capture, so anything that must reach the
-  file is drawn onto the frame before encoding. The same applies to
+- **Only the open menu and the pointer are burned into the recording** —
+  nothing else. Our own layer is hidden from external capture, so anything
+  that must reach the file is drawn onto the frame before encoding. The same applies to
   screenshots. The HUD panel and the watermark used to be burned in as well;
   they are gone from the screen, and in a file they read as someone else's
-  caption.
+  caption. The pointer (`app/pointer.py`) is drawn the way the worker draws it
+  into a GPU recording, at its place on the captured monitor or window; a
+  hidden one is not.
 
 ### For both paths
 
@@ -300,7 +326,8 @@ a maintainer's GPU, paths or experimental switches cannot leak into a release.
 | `hotkeys` | `{"toggle": "Num1", ...}` — see README, "Using it". Names: `Num0`-`Num9`, `Numdot`, `Numplus`, `Numminus`, `Nummul`, `Numdiv`, `F1`-`F12`, `Insert`, `Home`, letters, digits, with `Ctrl+`/`Alt+`/`Shift+` |
 | `nr_passes` | 1-4, how many passes the network makes over one frame (Boost only). An experiment; the second pass costs about a third of the frame rate and every extra pass carries its own network - about 640 MB at a 2560x1440 work size, and it scales with that size |
 | `fps_overlay` | `off` / `tl` / `tr` / `bl` / `br` - the on-screen frame counter and the corner it sits in |
-| `lens`, `lens_fov`, `lens_noise` | the fisheye lens: off by default; the game's horizontal field of view, 60-170 degrees (110); webcam noise 0-1 (0.3) |
+| `notifications` | `all` / `errors` / `none` - which pop-ups show; `errors` keeps those whose text matches an error string (`ALERT_ERROR_KEYS` in `app/display.py`, in every language), and a hidden one still goes to the log. Default `all` |
+| `lens`, `lens_bend`, `lens_fov`, `lens_noise`, `lens_vignette`, `lens_aberration`, `lens_sensor` | the camera: off by default; the fisheye within it (on); the game's horizontal field of view, 60-170 degrees (110); webcam noise (0.3), vignette, chromatic aberration and small sensor (0) - each 0-1 in 0.05 steps, 0 = off |
 | `tray_on_minimise`, `tray_on_close` | what the taskbar button's minimise and close do; both off by default, and neither stops the neural pass |
 | `menu_scale_auto` | the panel size is still the automatic fit; cleared for good the moment a scale step is chosen by hand |
 | `menu_offset`, `menu_scale`, `menu_height` | where the menu sits, its scale and height. Written by the app, not meant to be edited by hand (`menu_height: null` — fit the content) |
@@ -327,7 +354,7 @@ They talk over stdin/stdout with a binary protocol:
 | `OUTS` / `OAK2` | named section the worker writes result pixels into; the reply then carries `bytes = 0xFFFFFFFF` instead of a payload |
 | `RECS` / `RSAK` | record the frame the viewer sees into an MP4, on the GPU; the answer names the codec, the size and the file's time 0 |
 | `RECE` / `REAK` | stop and close the recording; `REAK` also comes unasked when the encoder fails |
-| `LENS` / `LNAK` | the fisheye lens on/off, its field of view and webcam noise; applied to the next frame, nothing rebuilt |
+| `LENS` / `LNAK` | the camera: on/off, the fisheye and its field of view, webcam noise; vignette, aberration and small sensor ride in the flags' upper bytes in 255ths (bit 0 on, bit 1 fisheye, bits 8-15 / 16-23 / 24-31); applied to the next frame, nothing rebuilt |
 
 **Capture.** On `DDA1` the worker opens Desktop Duplication on the GPU: each
 frame is copied into a cross-device shared texture and swizzled to RGBA.
@@ -434,9 +461,21 @@ starting FG/recording/a screenshot — rearms channels from a fresh source frame
 and cleared temporal history. Those explicit consumers use bypass frames while
 NR itself remains off.
 
+**A lost capture.** In an RDP session, and while a UAC prompt or the lock
+screen holds the secure desktop, Desktop Duplication (or a window capture) goes
+away. The worker keeps the last picture and reopens the source on a schedule -
+250 ms after the loss, then doubling up to 2 s while it keeps refusing - so it
+comes back on its own. Meanwhile a grab returns at once, where a live capture's
+acquire waits for the next picture, and the client answers every instant reply
+with the next frame: ~500 frames a second and one CPU core at 92% for a whole
+RDP session (#157). So while the capture is lost, the worker waits before each
+grab for up to a 30 fps frame (`kLostCaptureFrameMs` = 33 ms) or until the
+retry is due, whichever comes first (`PaceLostCapture`).
+
 **Recording path.** Frames are requested from the worker with
 `FRAME_FLAG_WANT_PIXELS` (the same mechanism as screenshots), the open menu
-is drawn onto the frame with `draw_capture_overlay()`, then PyAV encodes
+is drawn onto the frame with `draw_capture_overlay()` and the pointer with
+`pointer.draw_pointer()`, then PyAV encodes
 AV1 NVENC. A screenshot copies this processed frame before opening Save As,
 so the dialog can never become the next captured frame; unlike a recording,
 it does not bake the open menu (#140) - the Screenshot button is in that menu.
@@ -710,10 +749,27 @@ frame after the last cascade pass (`native/stabilizer.inl`). The history of
 the edit is carried along the motion field; per pixel, the vector and "no
 motion" compete on how well they explain the current input (a 3x3 patch
 tested against the input's 3x3 range), the history is clamped to the current
-3x3 edit range +- 0.02, and the current edit gets at least 25% weight. The
-native picture underneath is never delayed, so a wrong history can misplace
-part of the enhancement, never the content. Any command, a reset, NR off or a
+3x3 edit range +- 0.02, and the current edit gets at least 25% weight at
+60 fps: the history's weight is 0.75 per 1/60 s between the source pictures
+(the capture's own timestamps; 1/60 s when they are unknown), so at 30 fps it
+is 0.56 and an old edit is not carried for twice as long. On top of that an
+edit guard: the network's own shimmer moves the edit by at most ~3 of 255, so
+where the edit differs from the history by more (the trust fades from 3 to 8
+of 255) it is a real change - a shadow that moved, a vector that missed - and
+passes through (#160). The native picture underneath is never delayed, so a
+wrong history can misplace part of the enhancement, never the content. Any command, a reset, NR off or a
 failure starts the history over.
+
+The motion field the history follows passes NVOFA's zero-motion test
+(`native/nvofa.inl`): a vector is kept only where it explains the pixel's 3x3
+neighbourhood on the grey pair the flow was measured on better than no motion,
+by a margin of one grey level per pixel - the driver answers small vectors on
+still pixels by itself, and its 4x4-block field carries a moving object's
+vector onto the background around it. Since #160 a vector that explains at
+least 40% of a real change (more than half a grey level per pixel) is kept as
+well: soft shading on a slowly moving face changes by less than a level a
+pixel, the absolute margin alone took its vectors away, and its shadows
+trailed. A still background does not change and stays at zero.
 
 Measured on the worker with known motion (`tests/nr_motion_harness.py`), the
 edit's frame-to-frame instability: pan 0.71 -> 0.40, moving object 1.14 ->
@@ -721,7 +777,9 @@ edit's frame-to-frame instability: pan 0.71 -> 0.40, moving object 1.14 ->
 NVOFA-like vectors 0.70 -> 0.30; the edit's strength within 2%; with zero
 (wrong) vectors the output's warp error does not grow. Cost about +0.1 ms at
 a 1248x702 work size and +0.3 ms at 2496x1404. On by default; `NS_STAB=0`
-turns it off, `NS_STAB_STRENGTH=0..1` scales it. The design and its
+turns it off, `NS_STAB_STRENGTH=0..1` scales it, `NS_STAB_FRAME_MS` pins the
+time between source pictures (4-100 ms; for the tests, whose pipe frames come
+as fast as the worker runs). The design and its
 references (MPCVR-DLSS5, Magpie, RenoDX, 2600th) are in
 `_work/stabilizer/SPEC.md`.
 
@@ -830,11 +888,18 @@ outputs rather than three strengths, which is why a saved preset keeps the
 model it was saved with.
 
 
-## Fisheye lens
+## Camera
 
-**Fisheye** (main page, under the effect sliders) re-projects the picture the
-viewer sees from the rectilinear frame a game renders into an equidistant
-fisheye (`native/lens.inl`). A rectilinear projection puts a ray at angle
+**Camera** (main page, under the effect sliders) lays a camera's look over the
+picture the viewer sees, in one pass (`native/lens.inl`), with every part on
+its own (#159): the fisheye (on by default, so a 2.3.0 setup keeps its look)
+and four amounts, each 0..1 and 0 = off - webcam noise (0.3 by default),
+vignette, chromatic aberration and small sensor. Any of them works without the
+fisheye; with the camera on and every part off the pass does not run.
+
+**Fisheye** re-projects the picture the viewer sees from the rectilinear
+frame a game renders into an equidistant fisheye. A rectilinear projection
+puts a ray at angle
 theta at `f_rect * tan(theta)` from the centre - which is what stretches the
 edges of a 110-120 degree game frame - while a real wide lens puts it at
 `f_fish * theta`. The game's horizontal field of view gives `f_rect`;
@@ -852,12 +917,13 @@ frames DLSS-G interpolates from (its motion is rectilinear). Every export site
 - the SDR, bypass and HDR presents, each real and generated frame of the FG
 presenter, the Spout/GPU-recording copy and the pixel readback (screenshots,
 CPU recording) - hands its source to `LensApply`, which writes into a target
-of its own and returns it in the source's state; with the lens off it returns
+of its own and returns it in the source's state; with the camera off it returns
 the source itself and the frame takes exactly the path it always did. The
 source is never written in place: the still-screen hold keeps `v.output`
 across frames and a lens applied there would compound. The settings travel in
-their own 24-byte command (`LENS`/`LNAK`), read between frames, so a slider
-move costs no rebuild, and a new worker is told once, keyed on its pid.
+their own 24-byte command (`LENS`/`LNAK`; the three newer amounts ride in the
+flags word's upper bytes), read between frames, so a slider move costs no
+rebuild, and a new worker is told once, keyed on its pid.
 
 **Webcam noise** sits in the same pass: soft specks about the size of a 720p
 pixel, mostly brightness with a little colour, stronger in the shadows. It is
@@ -866,6 +932,19 @@ shown, exported and recorded in one frame carries the same specks, and Frame
 Generation's frames are not each given their own - the noise is added after
 interpolation, which is where grain has to go (interpolating two noise fields
 halves their contrast mid-way and makes them "breathe").
+
+**The rest of the camera.** **Chromatic aberration** takes red a little
+further out and blue a little further in, by up to 0.5% of the radius (about
+5 px in a 1080p corner), as through a cheap wide lens. **Small sensor**
+softens the picture towards the corners (four taps a few pixels apart, blended
+in from the middle of the radius outwards), narrows the range - at full
+strength the black point lifted to 0.05 and the white point pulled to 0.90,
+a gentle S between them - and takes a sixth of the colour away. **Vignette**
+darkens the corners. The order in the pass: the geometry (the fisheye), the
+aberration, the corner softness, the sensor curve, the vignette and the noise
+last - the darkened corners are where a small sensor's noise shows most. The
+sensor curve, the vignette and the noise work in display terms: a linear
+(scRGB) target is encoded with 1/2.2 and back.
 
 Measured on the worker (`tests/test_lens.py`): at 120 degrees every probed
 pixel comes from where the equidistant mapping says, to within the 8-bit test

@@ -254,7 +254,7 @@ ABOUT = {
     "test_focus_z_order.py": "focused target stays below the worker picture and HUD",
     "test_split.py": "the before/after wipe leaves the left side untouched",
     "test_split_flag.py": "a wipe position that rounds to zero does not turn the wipe on",
-    "test_lens_menu.py": "the fisheye switch, angle and noise reach the worker as one LENS command each and are saved",
+    "test_lens_menu.py": "the camera switches, angle and amounts reach the worker as one LENS command each and are saved",
     "test_notification_levels.py": "pop-up notifications: all, only the errors, or none - the log keeps everything (#157)",
     "test_taskbar_window.py": "the taskbar button exists, opens the menu, closes cleanly",
     "test_taskbar_show.py": "duplicate taskbar activation shows the menu without closing it",

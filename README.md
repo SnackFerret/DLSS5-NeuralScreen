@@ -92,9 +92,9 @@ The whole screen is the default. **Source**, second in the menu, switches
 between **Fullscreen** and **Window mode**; choosing the second opens the list
 of windows, and hovering a row highlights that window. **Num5** is the
 shortcut when the window is already in front of you: point at it and press.
-The overlay follows the window as it moves, and resizing it — a video going
-fullscreen, a different player size — reconfigures the worker in place, with
-no black moment. Minimising the window pauses processing.
+The overlay follows the window as it moves; resizing it, or picking another
+window on the same monitor while nothing records, reconfigures the worker in
+place, with no black moment. Minimising the window pauses processing.
 
 ## The menu
 
@@ -113,9 +113,9 @@ on it, red when it is not.
   three strengths: **Default** suits a desktop, **Natural** and **Cinematic**
   are tuned for games and soften photographs and small text (measured in
   TECHNICAL.md). A saved preset keeps the model it was saved with.
-- **Fisheye** — a wide-lens look: set **Field of view** to the game's FOV
-  (110-120 is typical); **Webcam noise** adds a small sensor's grain. A game
-  mode: away from the centre a click lands elsewhere than it looks.
+- **Camera** — **Fisheye** (on by default; **Field of view** = the game's FOV,
+  110-120 typical; off-centre clicks land elsewhere) and four amounts, 0 = off:
+  **Webcam noise**, **Vignette**, **Chromatic aberration**, **Small sensor**.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
 - **Boost** — on by default. The network runs at a reduced resolution and a
@@ -137,8 +137,8 @@ on it, red when it is not.
 Everything else is behind the sliders icon: monitor/GPU, a 30/60/custom/off
 frame limiter, HDR, media folders, file conversion, Spout2, the recording
 indicator, an on-screen frame counter, minimise/close to tray, key
-assignments, keyboard navigation, theme and **12** languages,
-and **Scale** above Quit, which sizes the panel.
+assignments, keyboard navigation, **Notifications** (All / Errors / None),
+theme and **12** languages, and **Scale** above Quit, which sizes the panel.
 
 ## Swapping a runtime
 
@@ -149,10 +149,10 @@ bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 ## Recording and screenshots
 
 **Num0** records to the configured folder, on the GPU by default (NVENC, 60 fps,
-sound, no frame-rate cost; a recording an error cuts short is kept). The open
-menu is not in it: turn **Record on the GPU** off for the older 30 fps path,
-which draws it in. **Num3** freezes the frame, without the menu, before any
-dialog; choose **Save As** or quiet saving, plus PNG or JPEG, in settings.
+sound, no frame-rate cost; a recording an error cuts short is kept), with the
+pointer unless a game hides it. The open menu is not: turn **Record on the GPU**
+off for the 30 fps path, which draws it in. **Num3** freezes the frame, without
+the menu, before any dialog; **Save As** or quiet, PNG or JPEG, in settings.
 
 **Recording externally:**
 
