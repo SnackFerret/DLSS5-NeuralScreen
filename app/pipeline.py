@@ -976,6 +976,11 @@ def switch_window(st, hwnd: int) -> None:
             st.display.alert(UI_STRINGS[st.lang]["win_fail"])
             _restore_after_failed_probe(st, hwnd)
             return
+        # From one window to another the running worker already captures the
+        # new one (the probe re-pointed it): reconfigure it in place when
+        # nothing else has to change (#148, #157: 17-38 s -> under a second).
+        if _switch_window_live(st, int(hwnd), int(aw), int(ah)):
+            return
         teardown_pipeline(st)
         st.window_hwnd = int(hwnd)
         st.width, st.height = int(aw), int(ah)
@@ -1018,6 +1023,105 @@ def apply_spout(st, enabled: bool) -> None:
         "Spout2 output ON" if enabled else "Spout2 output OFF"))
 
 
+def _same_monitor(a: int, b: int) -> bool:
+    """Whether two windows are on the same monitor (nearest, as Windows says)."""
+    user32 = ctypes.windll.user32
+    user32.MonitorFromWindow.restype = ctypes.c_void_p
+    user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    ma = user32.MonitorFromWindow(ctypes.c_void_p(a), 2)   # MONITOR_DEFAULTTONEAREST
+    mb = user32.MonitorFromWindow(ctypes.c_void_p(b), 2)
+    return bool(ma) and ma == mb
+
+
+def _switch_window_live(st, hwnd: int, aw: int, ah: int) -> bool:
+    """Another window picked while one is processed: keep the worker.
+
+    The probe that measured the new window has already re-pointed the running
+    worker's capture at it (WGCW), so what is left is what a resize does -
+    RNSZ to its size, the guides, the shared sections, the overlay. A full
+    rebuild for this cost a new process and NGX init: 17-38 s with a big
+    model on a busy card, against well under a second here (#148 part 2,
+    measured by the reporter of #157).
+
+    Only when nothing else has to change, otherwise the old road: the
+    worker captures (window mode, NR on - with NR off its capture is closed
+    and the probe ran on an idle worker), the new window is on the same
+    monitor as the old one (another monitor can be another HDR state and
+    another DPI, which the worker reads at its start), and no recording runs
+    (a recording is sized and paced for the window it began on).
+    """
+    old = st.window_hwnd
+    if (old is None or not st.dda_mode or getattr(st, "off_suspended", False)
+            or st.recorder is not None or int(old) == int(hwnd)
+            or not ctypes.windll.user32.IsWindow(ctypes.c_void_p(int(old)))
+            or not _same_monitor(int(old), int(hwnd))):
+        return False
+    t0 = time.perf_counter()
+    if not _reconfigure_live(st, aw, ah):
+        return False
+    st.window_hwnd = int(hwnd)
+    rect = window_frame_rect(hwnd)
+    st.follow_size = rect[2:] if rect else None
+    st.display.exit_switch_mode()   # the overlay was raised before the probe
+    if st.display.menu.visible:     # the window list marks the processed one
+        st.display.menu.set_state(settings_io.menu_payload(st))
+    st.display.alert(UI_STRINGS[st.lang]["win_mode_on"])
+    print(f"[main] switched to window 0x{int(hwnd):X} live in "
+          f"{(time.perf_counter() - t0) * 1000:.0f} ms (capture {st.width}x{st.height}, "
+          f"work {st.work_w}x{st.work_h})")
+    return True
+
+
+def _reconfigure_live(st, aw: int, ah: int) -> bool:
+    """The running worker captures a source of aw x ah now: RNSZ to it, and
+    everything sized by the frame follows. False if RNSZ did not go through -
+    the caller then takes the full rebuild."""
+    new_w, new_h = _work_size(int(aw), int(ah), st.work_scale,
+                              cascade_passes(st))
+    new_full_w = int(aw) if (new_w != aw or new_h != ah) else 0
+    new_full_h = int(ah) if (new_w != aw or new_h != ah) else 0
+    try:
+        send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
+                    new_full_w, new_full_h, st.nr_small, st.nr_direct,
+                    getattr(st, "nr_passes", 1))
+        st.reader.wait_rack(timeout=RACK_TIMEOUT)
+        st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
+        # A resize rebuilds the cascade, and a rebuilt cascade reads the main
+        # set - so the second set has to follow every RNSZ, not just the ones
+        # the menu sends.
+        _send_per_pass_if_any(st)
+    except Exception as exc:
+        print(f"[main] live reconfigure: RNSZ did not go through ({exc})",
+              file=sys.stderr)
+        return False
+    st.width, st.height = int(aw), int(ah)
+    st.work_w, st.work_h = new_w, new_h
+    # The guides carry the work size in their buffers, and the worker reads
+    # exactly that many bytes of motion - they change together or the stream
+    # desynchronises (see do_restart).
+    st.guides = TemporalGuideGenerator(
+        new_w, new_h, emit_small=st.motion_small,
+        preset=st.cfg.get("flow_preset", "fast"))
+    channels.sync_motion_size(st)
+    channels.sync_gray(st)
+    # Both of these are sized for the old frame. Re-negotiated here rather
+    # than through the forget_* flags: those exist for a worker that died,
+    # and forget_present would drop the display out of HUD-only mode for a
+    # frame on the way.
+    channels.forget_out(st)
+    channels.enable_out_shm(st)
+    if st.present_mode:
+        channels.enable_present(st)
+    st.display.resize(st.width, st.height)
+    st.follow_pos = None
+    st.follow_resize = None
+    st.frame_index = 0
+    st.pts = 0
+    st.work_frame = None
+    st.last_restart = time.monotonic()
+    return True
+
+
 def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
     """The followed window changed size: reconfigure, do not restart.
 
@@ -1058,54 +1162,13 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
         return False
     if aw < 64 or ah < 64:
         return False
-    new_w, new_h = _work_size(int(aw), int(ah), st.work_scale,
-                              cascade_passes(st))
-    new_full_w = int(aw) if (new_w != aw or new_h != ah) else 0
-    new_full_h = int(ah) if (new_w != aw or new_h != ah) else 0
-    try:
-        t0 = time.perf_counter()
-        send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
-                    new_full_w, new_full_h, st.nr_small, st.nr_direct,
-                    getattr(st, "nr_passes", 1))
-        st.reader.wait_rack(timeout=RACK_TIMEOUT)
-        st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
-        # A resize rebuilds the cascade, and a rebuilt cascade reads the main
-        # set - so the second set has to follow every RNSZ, not just the ones
-        # the menu sends.
-        _send_per_pass_if_any(st)
-    except Exception as exc:
-        print(f"[main] live resize: RNSZ did not go through ({exc})",
-              file=sys.stderr)
+    t0 = time.perf_counter()
+    if not _reconfigure_live(st, aw, ah):
         return False
-    st.width, st.height = int(aw), int(ah)
-    st.work_w, st.work_h = new_w, new_h
-    # The guides carry the work size in their buffers, and the worker reads
-    # exactly that many bytes of motion - they change together or the stream
-    # desynchronises (see do_restart).
-    st.guides = TemporalGuideGenerator(
-        new_w, new_h, emit_small=st.motion_small,
-        preset=st.cfg.get("flow_preset", "fast"))
-    channels.sync_motion_size(st)
-    channels.sync_gray(st)
-    # Both of these are sized for the old frame. Re-negotiated here rather
-    # than through the forget_* flags: those exist for a worker that died,
-    # and forget_present would drop the display out of HUD-only mode for a
-    # frame on the way.
-    channels.forget_out(st)
-    channels.enable_out_shm(st)
-    if st.present_mode:
-        channels.enable_present(st)
-    st.display.resize(st.width, st.height)
-    st.follow_pos = None
     st.follow_size = (frame_w, frame_h)
-    st.follow_resize = None
-    st.frame_index = 0
-    st.pts = 0
-    st.work_frame = None
-    st.last_restart = time.monotonic()
     print(f"[main] the window is now {frame_w}x{frame_h} - reconfigured live "
           f"in {(time.perf_counter() - t0) * 1000:.0f} ms "
-          f"(capture {st.width}x{st.height}, work {new_w}x{new_h})")
+          f"(capture {st.width}x{st.height}, work {st.work_w}x{st.work_h})")
     return True
 
 

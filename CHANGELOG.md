@@ -63,6 +63,14 @@ Scope and honesty notes:
   the fisheye they are drawn after the network and after Frame Generation and
   land in GPU recordings, Spout and screenshots; with the camera on and every
   part off, nothing runs.
+* **Picking another window no longer restarts everything (#148, #157).**
+  Switching the processed window from the menu killed the worker and started a
+  new one - NGX initialised again, 17-38 s on one reporter's machine with a big
+  model on a busy card. The worker is now kept and reconfigured in place, the
+  way a window resize already was: the switch takes about as long as a resize
+  (under a second in the same report). Only from one window to another on the
+  same monitor, with NR on and no recording running; from the desktop, to
+  another monitor or during a recording it takes the full rebuild as before.
 
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 
