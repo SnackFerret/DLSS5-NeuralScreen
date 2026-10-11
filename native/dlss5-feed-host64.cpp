@@ -777,9 +777,13 @@ static bool RecordWanted(int64_t *t)
     return GpuRecFrameDue(t);
 }
 
+// The pointer drawn over the recorded copy (cursor.inl, #131).
+static ID3D12Resource *CursorApply(ID3D12GraphicsCommandList *list, ID3D12Resource *src);
+
 // The copy of `src` (in COPY_SOURCE) into the recorder's ring, as this frame.
 static void RecordCopyAt(ID3D12GraphicsCommandList *list, ID3D12Resource *src, int64_t t)
 {
+    src = CursorApply(list, src);
     const int slot = GpuRecReserve(src);
     if (slot < 0) return;   // the encoder is behind: counted as dropped
     GpuRecCopy(list, slot, src);
@@ -6375,6 +6379,7 @@ static void ProfileGpuEnd(ProfileStage, unsigned query_count)
 
 #include "nvofa.inl"
 #include "stabilizer.inl"
+#include "cursor.inl"
 
 static void ReadProfileGpuTime(int slot)
 {
@@ -7133,6 +7138,7 @@ static void ReleaseVideoTextures(VideoState &v)
     CloseNvofa();
     CloseStab();
     CloseLens();
+    CloseCursor();
     NvofaResetLatch();
     if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     CloseFgResources();

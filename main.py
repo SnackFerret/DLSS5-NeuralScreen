@@ -144,6 +144,7 @@ import power
 import startup
 import settings_io
 import pipeline
+import pointer
 from pacing import FramePacer, FrameRateMeter
 # The restart cooldown is the loop's business too: it is what the
 # deferred apply waits for.
@@ -1418,6 +1419,21 @@ def main() -> int:
                     except Exception as menu_exc:
                         print(f"[main] menu was not baked into the recorded frame: {menu_exc}",
                               file=sys.stderr)
+                    # And the pointer, which the capture never holds (#131) -
+                    # the GPU recording gets it from the worker.
+                    try:
+                        if st.window_hwnd is not None:
+                            area = window_frame_rect(st.window_hwnd)
+                        else:
+                            ox, oy = getattr(st, "mon_origin", (0, 0))
+                            area = (ox, oy, *st.capture.resolution)
+                        if area:
+                            pointer.draw_pointer(st.output_rgba, area)
+                    except Exception as ptr_exc:
+                        if not getattr(st, "pointer_bake_failed", False):
+                            st.pointer_bake_failed = True
+                            print(f"[main] the pointer was not drawn into the recording: "
+                                  f"{ptr_exc}", file=sys.stderr)
                     # The recording gets its own try: an encoder failure must
                     # NOT land in the "output failed" except (that one
                     # recreates the pygame window on every frame - an endless

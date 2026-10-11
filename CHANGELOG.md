@@ -71,6 +71,13 @@ Scope and honesty notes:
   (under a second in the same report). Only from one window to another on the
   same monitor, with NR on and no recording running; from the desktop, to
   another monitor or during a recording it takes the full rebuild as before.
+* **Recordings show the pointer (#131).** The capture never holds the
+  pointer - the overlay shows the real one over the processed picture - so
+  recordings had none. It is now drawn into the recorded frames only: the
+  system pointer's own shape (any size, colour or monochrome) where it was on
+  the captured monitor or window, in GPU recordings by the worker and in the
+  CPU fallback by the client. A hidden pointer - a game that captures the
+  mouse - is not drawn; an HDR10 recording goes without it for now.
 
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 
