@@ -615,9 +615,13 @@ changed nothing - eval on the GPU 709 ms, 0.9 NR fps, as with no lever.
 `NS_GPU_PRIORITY=realtime`, started as administrator (the class reads back
 5), removed the starvation: eval on the GPU 5.7 ms, 64 NR fps with the game in
 focus against 81.5 after Alt-Tab. So under HAGS the realtime scheduling class
-is the lever that reaches the scheduler, and the queue priority is not. It
-stays an environment variable: it needs elevation, and it takes GPU time from
-the game, which one measurement does not price.
+is the lever that reaches the scheduler, and the queue priority is not.
+
+Its price, measured by the same reporter (10.10, RE Village, HAGS on, uncapped,
+RTSS per process): the game 159.1 -> 54.9 fps (1% low 60.2 -> 18.8), NR 1.5 ->
+54.6 fps. The class does not make the card faster, it moves the split to about
+half each - which a frame cap in the game also does, without elevation. So it
+stays an environment variable, not a setting.
 
 ### work_scale costs nothing (in upscale mode)
 

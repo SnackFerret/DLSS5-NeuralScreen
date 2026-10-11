@@ -11,7 +11,7 @@ Checked without a window:
 * the filter (Display.alert on a bare Display): every error pop-up of every
   language, filled in, shows under "errors"; the info ones do not; "none"
   shows nothing; a hidden one is printed;
-* the menu: the Program tab has the three-cell row, a click asks for
+* the menu: the Program tab has the all/errors/none row, a pick asks for
   ("notifications", value), and the handler stores it and tells the display;
 * the config: an unknown value falls back to "all", and the choice is saved.
 
@@ -99,13 +99,15 @@ def _check_menu(failures: list) -> None:
     menu.set_state({"nr": True, "gpu_ok": True, "profile": "Natural",
                     "profiles": ["Natural"], "lang": "en", "notifications": "errors"})
     menu.layout(1920, 1080)
-    cells = [it for it in menu.items if it.key == "notifications"]
-    if len(cells) != 3:
-        failures.append(f"the Program tab has {len(cells)} notification cells, not 3")
+    row = next((it for it in menu.items
+                if it.kind == "segmented" and it.key == "notifications"), None)
+    if row is None or list(row.payload or []) != ["all", "errors", "none"]:
+        failures.append(f"the Program tab has no all/errors/none row "
+                        f"({row and row.payload})")
         return
-    actions = menu._activate_item(cells[2])
+    actions = menu._pick("notifications", "none")
     if actions != [("notifications", "none")]:
-        failures.append(f"a click on the last cell asked for {actions}")
+        failures.append(f"picking 'none' asked for {actions}")
     levels = []
     st = types.SimpleNamespace(cfg={}, display=types.SimpleNamespace(
         set_alert_level=levels.append))

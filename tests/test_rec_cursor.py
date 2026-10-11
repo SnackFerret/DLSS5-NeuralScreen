@@ -92,6 +92,7 @@ def _record(folder: Path, name: str, fail_stage: str = "") -> Path:
             i += 1
         rec.finish()
         rec.wait(40.0)
+        _record.logs = [ln for ln in logs if "[grec]" in ln or "[cap]" in ln]
     finally:
         target.animate = False
         shutdown_worker(worker, stop)
@@ -144,6 +145,7 @@ def main() -> int:
         ctypes.windll.user32.SetCursorPos(px, py)
         _cpu_path(failures, px, py)
         with_pointer = _record(folder, "on")
+        _record.on_logs = list(getattr(_record, "logs", []))
         ctypes.windll.user32.SetCursorPos(px, py)
         without = _record(folder, "off", fail_stage="no-rec-cursor")
         on_near, on_far = _patch_spread(with_pointer, px, py)
@@ -153,6 +155,8 @@ def main() -> int:
         if on_near < 80:
             failures.append(f"the recording shows no pointer ({on_near} codes from the grey "
                             f"under it)")
+            print("    worker (with the pass):", *getattr(_record, "on_logs", []),
+                  sep="\n      ")
         if off_near > 40:
             failures.append(f"without the pointer pass the patch is not grey ({off_near}) - "
                             f"the check proves nothing")

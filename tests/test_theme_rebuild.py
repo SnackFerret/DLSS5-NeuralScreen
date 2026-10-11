@@ -69,6 +69,9 @@ class _Display:
     def set_lang(self, *a, **k):
         pass
 
+    def set_alert_level(self, *a, **k):
+        pass
+
     def set_excluded_from_capture(self, *a, **k):
         pass
 
