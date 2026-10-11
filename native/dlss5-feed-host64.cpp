@@ -6000,6 +6000,21 @@ static void RetryLostCapture()
     g_capture_retry_at = now + g_capture_retry_ms;
 }
 
+// While the source is lost nothing paces the frame loop: DdaGrab/WgcGrab
+// return at once, where a live capture's acquire waits for the next picture,
+// and the client answers every instant reply with the next frame - ~500 a
+// second on one CPU core for as long as the desktop stayed away (#157, an RDP
+// session). A lost capture waits up to a 30 fps frame, or until its retry.
+static constexpr ULONGLONG kLostCaptureFrameMs = 33;
+
+static void PaceLostCapture()
+{
+    if (!g_capture_lost) return;
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG wait = g_capture_retry_at > now ? g_capture_retry_at - now : 0;
+    if (wait > 0) Sleep(static_cast<DWORD>((std::min)(wait, kLostCaptureFrameMs)));
+}
+
 static void RecreateWgcPool(UINT width, UINT height)
 {
     winrt::Windows::Graphics::SizeInt32 size = {};
@@ -7863,6 +7878,7 @@ static int RunVideo()
         if (msg == 10)
         {
             if (!CaptureActive()) { Log("[cap] CAP1 requires active capture"); return 10; }
+            PaceLostCapture();
             prepared_got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
             if (g_dda_ready && g_gray_mapped && !g_capture_gray_ok)
             { Log("[cap] gray update failed; refusing mismatched motion"); return 10; }
@@ -7987,6 +8003,8 @@ static int RunVideo()
         static ULONGLONG last_fresh_tick = GetTickCount64();
         static bool stall_pending = false;
         static unsigned long stall_gap_ms = 0;
+        // A frame prepared by CAP1 was paced there already.
+        if ((fh.reserved & FRAME_FLAG_PREPARED) == 0) PaceLostCapture();
         const ULONGLONG now_tick = GetTickCount64();
         RetryLostCapture();
         if (CaptureActive())

@@ -43,6 +43,14 @@ Scope and honesty notes:
   in the edit larger than the network's own shimmer (3-8 of 255) now passes
   through, and the history's weight follows the time between frames, so a
   30 fps game no longer carries an old edit for twice as long as a 60 fps one.
+* **A lost desktop no longer spins a CPU core (#157).** In an RDP session -
+  and for the moments a UAC prompt or the lock screen is up - Desktop
+  Duplication goes away, and the program kept the last picture and retried, as
+  it should. But nothing paced the frames meanwhile: every reply came at once
+  and the next frame followed it, ~500 a second with both GPUs idle and one
+  CPU core at 92% for the whole remote session. While the capture is lost the
+  frames now come no faster than a 30 fps capture's, and it is still asked for
+  again on the same schedule, so it comes back on its own.
 
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 

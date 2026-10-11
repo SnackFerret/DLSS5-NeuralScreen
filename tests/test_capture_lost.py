@@ -13,6 +13,11 @@ lost and refuses to reopen for 1.5 s (NS_TEST_FAIL_STAGE=dda-lost); CAP1 and
 NO_COLOR frames keep coming throughout. The worker must answer every frame,
 say the desktop is gone and that it is back, and keep running.
 
+And while it is gone it must not answer at once (#157): nothing waits for a
+picture then, and a client that sends the next frame on every reply spun at
+~500 frames a second on one CPU core for a whole RDP session. While the
+desktop is away the frames come no faster than a 30 fps capture's.
+
 Run:  runtime\\python.exe tests\\test_capture_lost.py
 """
 import ctypes
@@ -54,6 +59,8 @@ def main() -> int:
     os.environ.pop("NS_TEST_FAIL_STAGE", None)
     motion = np.zeros((GH, GW, 2), dtype=np.float16)
     answered = 0
+    lost_frames = 0
+    lost_since = lost_until = None
     try:
         pipe.send_dda(worker, screen_w, screen_h)
         reader.wait_dack(15)
@@ -79,7 +86,13 @@ def main() -> int:
             reader.recv(i, 10.0)
             answered += 1
             i += 1
-            time.sleep(0.01)
+            text_now = "\n".join(list(logs))
+            if "desktop is not available" in text_now and "desktop is back" not in text_now:
+                if lost_since is None:
+                    lost_since = time.perf_counter()
+                lost_frames += 1
+                lost_until = time.perf_counter()
+            time.sleep(0.002)
     except Exception as exc:
         failures.append(f"the run raised {type(exc).__name__}: {exc}")
     finally:
@@ -96,7 +109,17 @@ def main() -> int:
         failures.append("the worker did not say the desktop was away")
     if "desktop is back" not in text:
         failures.append("the desktop never came back")
-    print(f"    {answered} frames answered")
+    lost_rate = None
+    if lost_since is not None and lost_until is not None and lost_until > lost_since:
+        lost_rate = (lost_frames - 1) / (lost_until - lost_since)
+    print(f"    {answered} frames answered"
+          + (f"; while the desktop was away {lost_frames} frames, {lost_rate:.0f} a second"
+             if lost_rate is not None else ""))
+    if lost_rate is None or lost_frames < 5:
+        failures.append("too few frames while the desktop was away to measure their rate")
+    elif lost_rate > 45.0:
+        failures.append(f"while the desktop was away the worker answered {lost_rate:.0f} "
+                        f"frames a second - a busy loop")
     for f in failures:
         print("FAIL:", f)
     if failures:
