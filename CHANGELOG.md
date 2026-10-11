@@ -30,7 +30,7 @@ Scope and honesty notes:
 
 ---
 
-## Unreleased
+## v2.4.0 - 2026-10-11 - Shadows that no longer trail, a camera around the fisheye, the pointer in recordings, live window switching
 
 * **A moving face's shadows no longer trail behind it (#160).** From 2.2.0 on,
   soft shading on a slowly moving face - a shadow side that is only a gentle
