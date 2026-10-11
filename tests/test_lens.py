@@ -17,6 +17,11 @@ Checked on the real worker:
   and a point halfway to the right edge comes from much nearer the centre.
 * Webcam noise over it: unbiased, clearly stronger in the shadows than in the
   light, within what a webcam shows, and renewed over time.
+* The rest of the camera, each with the fisheye off (#159): the noise alone
+  leaves the geometry as it was; the vignette darkens the corners and leaves
+  the centre; chromatic aberration moves red outwards and blue inwards and
+  leaves green; the small sensor crushes the darkest greys to black, clips the
+  brightest to white and keeps the middle near the middle.
 * Off means off: before the first LENS and after LENS off, the output is the
   input bit for bit.
 * On the presented paths - the worker's own window, with and without Frame
@@ -47,8 +52,8 @@ import numpy as np  # noqa: E402
 from paths import NATIVE_DIR, WORKER_EXE  # noqa: E402
 from protocol import (FRAME_FLAG_BYPASS, FRAME_FLAG_WANT_PIXELS, FRAME_FMT,  # noqa: E402
                       FRAME_MAGIC, HEADER_FMT, LENS_ACK_FMT, LENS_ACK_MAGIC,
-                      LENS_FLAG_ON, LENS_FMT, LENS_MAGIC, OUT_FMT, OUT_MAGIC,
-                      VIDEO_MAGIC)
+                      LENS_FMT, LENS_MAGIC, OUT_FMT, OUT_MAGIC, VIDEO_MAGIC,
+                      lens_flags)
 from worker_reply import read_exact, read_reply  # noqa: E402
 
 W, H = 640, 360
@@ -79,6 +84,59 @@ def _expected_source(x: float, y: float, fov: float) -> tuple:
     return cx + dx * s, cy + dy * s
 
 
+def _camera_checks(failures, rgba, grey, steps, flat_noisy, vignetted, fringed, sensed):
+    """The camera's parts, each with the fisheye off."""
+    src = rgba[..., :3].astype(np.float64)
+    if flat_noisy is not None:
+        diff = flat_noisy[..., :3].astype(np.float64) - src
+        print(f"    noise without the fisheye: mean shift {diff.mean():+.2f}, "
+              f"spread {diff.std():.1f}")
+        if diff.std() < 1.0:
+            failures.append("with the fisheye off the noise is not there (#159)")
+        if np.abs(diff).mean() > 12.0 or abs(diff.mean()) > 1.0:
+            failures.append(f"with the fisheye off the noise also moved the picture "
+                            f"(mean |diff| {np.abs(diff).mean():.1f})")
+    if vignetted is not None:
+        v = vignetted[..., :3].astype(np.float64)
+        centre = v[H // 2 - 8:H // 2 + 8, W // 2 - 8:W // 2 + 8].mean()
+        corner = np.mean([v[:12, :12].mean(), v[:12, -12:].mean(),
+                          v[-12:, :12].mean(), v[-12:, -12:].mean()])
+        print(f"    vignette at 100%: centre {centre:.0f}, corners {corner:.0f} (input 160)")
+        if abs(centre - 160) > 3:
+            failures.append(f"the vignette changed the centre ({centre:.0f} against 160)")
+        if not corner < 0.7 * centre:
+            failures.append(f"the vignette did not darken the corners ({corner:.0f})")
+    if fringed is not None:
+        f = fringed[..., :3].astype(np.float64)
+        band = slice(H // 2 - 20, H // 2 + 20)
+        right = (src[band, -60:, 0] - f[band, -60:, 0]).mean()
+        left = (src[band, :60, 0] - f[band, :60, 0]).mean()
+        green = np.abs(src[..., 1] - f[..., 1]).mean()
+        print(f"    aberration at 100%: red at the right edge {right:+.2f} codes, "
+              f"at the left {left:+.2f}, green moved {green:.2f}")
+        # Red is the x ramp: taken from nearer the centre it reads lower on the
+        # right and higher on the left.
+        if not (right > 0.3 and left < -0.3):
+            failures.append(f"the aberration did not move red outwards "
+                            f"(right {right:+.2f}, left {left:+.2f})")
+        if green > 0.2:
+            failures.append(f"the aberration moved green too ({green:.2f})")
+    if sensed is not None:
+        s = sensed[H // 2 - 20:H // 2 + 20, :, :3].astype(np.float64)
+        col = lambda k: s[:, k * W // 16 + W // 64:(k + 1) * W // 16 - W // 64].mean()  # noqa: E731
+        dark, bright, mid = col(0), col(15), col(8)
+        lift = col(1)
+        print(f"    small sensor at 100%: grey 0 -> {dark:.0f}, 17 -> {lift:.0f}, "
+              f"136 -> {mid:.0f}, 255 -> {bright:.0f}")
+        if lift > 8:
+            failures.append(f"the small sensor did not crush the darkest grey (17 -> {lift:.0f})")
+        if col(14) < 250:
+            failures.append(f"the small sensor did not clip the brightest grey "
+                            f"(238 -> {col(14):.0f})")
+        if abs(mid - 136) > 20:
+            failures.append(f"the small sensor moved the middle grey (136 -> {mid:.0f})")
+
+
 def _pipe_run(failures: list) -> None:
     profile = dict(style=1, auto_mask=1, intensity=1.0, local_tone=0.5,
                    local_structure=1.0, skin_structure=-1.0)
@@ -100,12 +158,13 @@ def _pipe_run(failures: list) -> None:
     motion = np.zeros((H, W, 2), np.float16)
     index = [0]
 
-    def frame() -> np.ndarray:
+    def frame(image: np.ndarray | None = None) -> np.ndarray:
         i = index[0]
         index[0] += 1
+        src = rgba if image is None else image
         proc.stdin.write(struct.pack(FRAME_FMT, FRAME_MAGIC, i, 1 if i == 0 else 0,
                                      FRAME_FLAG_WANT_PIXELS | FRAME_FLAG_BYPASS, i)
-                         + rgba.tobytes() + motion.tobytes())
+                         + src.tobytes() + motion.tobytes())
         proc.stdin.flush()
         magic, idx, ok, nbytes, _ngx, _pts = struct.unpack(
             OUT_FMT, read_reply(proc.stdout, struct.calcsize(OUT_FMT)))
@@ -113,8 +172,10 @@ def _pipe_run(failures: list) -> None:
             raise RuntimeError(f"bad reply to frame {i}: ok={ok} bytes={nbytes}")
         return np.frombuffer(read_exact(proc.stdout, nbytes), np.uint8).reshape(H, W, 4).copy()
 
-    def lens(on: bool, fov: float, noise: float = 0.0) -> None:
-        proc.stdin.write(struct.pack(LENS_FMT, LENS_MAGIC, LENS_FLAG_ON if on else 0,
+    def lens(on: bool, fov: float, noise: float = 0.0, bend: bool = True,
+             vignette: float = 0.0, aberration: float = 0.0, sensor: float = 0.0) -> None:
+        proc.stdin.write(struct.pack(LENS_FMT, LENS_MAGIC,
+                                     lens_flags(on, bend, vignette, aberration, sensor),
                                      fov, noise, 0))
         proc.stdin.flush()
         magic, ok, _r0, _r1, _pts = struct.unpack(
@@ -123,6 +184,13 @@ def _pipe_run(failures: list) -> None:
             raise RuntimeError(f"LENS was not acknowledged (0x{magic:08X}, ok={ok})")
 
     bent = noisy = noisy_later = None
+    flat_noisy = vignetted = fringed = sensed = None
+    grey = np.full((H, W, 4), 160, np.uint8)
+    grey[..., 3] = 255
+    # Sixteen columns of grey, 0 to 255.
+    steps = np.empty((H, W, 4), np.uint8)
+    steps[..., :3] = (np.arange(W) * 16 // W * 17).astype(np.uint8)[None, :, None]
+    steps[..., 3] = 255
     try:
         proc.stdin.write(header)
         proc.stdin.flush()
@@ -135,6 +203,15 @@ def _pipe_run(failures: list) -> None:
         noisy = frame()
         time.sleep(0.12)              # the noise is renewed 30 times a second
         noisy_later = frame()
+        # The camera without the fisheye (#159).
+        lens(True, FOV, 1.0, bend=False)
+        flat_noisy = frame()
+        lens(True, FOV, bend=False, vignette=1.0)
+        vignetted = frame(grey)
+        lens(True, FOV, bend=False, aberration=1.0)
+        fringed = frame()
+        lens(True, FOV, bend=False, sensor=1.0)
+        sensed = frame(steps)
         lens(False, FOV)
         after = frame()
         if not np.array_equal(after[..., :3], rgba[..., :3]):
@@ -157,6 +234,7 @@ def _pipe_run(failures: list) -> None:
             failures.append("the lens pipeline did not build: " + line.strip())
     if bent is None:
         return
+    _camera_checks(failures, rgba, grey, steps, flat_noisy, vignetted, fringed, sensed)
     if noisy is not None and noisy_later is not None:
         diff = noisy[..., :3].astype(np.float64) - bent[..., :3].astype(np.float64)
         dark = diff[: H // 3, : W // 3].std()      # the ramp is darkest top-left

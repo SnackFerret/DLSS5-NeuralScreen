@@ -550,16 +550,21 @@ PER_PASS_FMT = "<4I4fq"
 PER_PASS_ACK_FMT = "<4Iq"       # magic, ok, reserved0, reserved1, pts
 PER_PASS_FLAG_ENABLED = 0x1     # passes 2+ use this set; clear = fall back to main
 
-# LENS: the fisheye lens over what the viewer sees (native/lens.inl). The
-# worker bends its output - after the network, the HDR composite and Frame
-# Generation - from the game's horizontal field of view, so the edges a wide
-# rectilinear frame stretches are compressed the way a real wide lens does.
-# Read between frames; a worker that never hears LENS shows no lens.
+# LENS: the camera over what the viewer sees (native/lens.inl). The worker
+# draws it on its output - after the network, the HDR composite and Frame
+# Generation: the fisheye (from the game's horizontal field of view, so the
+# edges a wide rectilinear frame stretches are compressed the way a real wide
+# lens does), webcam noise, a vignette, chromatic aberration and a small
+# sensor's look, each on its own. The three strengths ride in the flags'
+# upper bytes (255ths), so the command keeps the frame header's 24 bytes.
+# Read between frames; a worker that never hears LENS shows no camera.
 LENS_MAGIC = 0x534E454C          # 'LENS'
 LENS_ACK_MAGIC = 0x4B414E4C      # 'LNAK'
 LENS_FMT = "<IIffq"              # magic, flags, fov (degrees), noise (0..1), pts (24)
 LENS_ACK_FMT = "<4Iq"            # magic, ok, reserved0, reserved1, pts
 LENS_FLAG_ON = 0x1
+LENS_FLAG_BEND = 0x2
+LENS_SHIFT_VIGNETTE, LENS_SHIFT_ABERRATION, LENS_SHIFT_SENSOR = 8, 16, 24
 LENS_FOV_MIN, LENS_FOV_MAX = 30.0, 170.0
 
 # RNSZ: change the work resolution on the fly (without restarting the worker
@@ -787,10 +792,25 @@ def send_per_pass(worker: subprocess.Popen, params: dict | None,
     worker.stdin.flush()
 
 
+def lens_flags(enabled: bool, bend: bool = True, vignette: float = 0.0,
+               aberration: float = 0.0, sensor: float = 0.0) -> int:
+    """The LENS flags word: on, the fisheye, and three strengths in 255ths."""
+    def byte(v: float) -> int:
+        v = float(v)
+        return 0 if v != v else int(round(min(1.0, max(0.0, v)) * 255.0))
+    return ((LENS_FLAG_ON if enabled else 0) | (LENS_FLAG_BEND if bend else 0)
+            | byte(vignette) << LENS_SHIFT_VIGNETTE
+            | byte(aberration) << LENS_SHIFT_ABERRATION
+            | byte(sensor) << LENS_SHIFT_SENSOR)
+
+
 def send_lens(worker: subprocess.Popen, enabled: bool, fov: float,
-              noise: float = 0.0, pts: int = 0) -> None:
-    """LENS: the fisheye lens on or off, from a horizontal field of view,
-    with webcam noise over it (0..1).
+              noise: float = 0.0, pts: int = 0, *, bend: bool = True,
+              vignette: float = 0.0, aberration: float = 0.0,
+              sensor: float = 0.0) -> None:
+    """LENS: the camera on or off - the fisheye from a horizontal field of
+    view (bend), webcam noise, a vignette, chromatic aberration and a small
+    sensor's look, each 0..1.
 
     Nothing is recreated and nothing is waited for: the worker applies it to
     the next frame and answers LNAK, which the reader drops like any answer
@@ -798,8 +818,8 @@ def send_lens(worker: subprocess.Popen, enabled: bool, fov: float,
     """
     fov = min(LENS_FOV_MAX, max(LENS_FOV_MIN, float(fov)))
     noise = min(1.0, max(0.0, float(noise)))
-    worker.stdin.write(struct.pack(LENS_FMT, LENS_MAGIC,
-                                   LENS_FLAG_ON if enabled else 0, fov, noise, int(pts)))
+    flags = lens_flags(enabled, bend, vignette, aberration, sensor)
+    worker.stdin.write(struct.pack(LENS_FMT, LENS_MAGIC, flags, fov, noise, int(pts)))
     worker.stdin.flush()
 
 

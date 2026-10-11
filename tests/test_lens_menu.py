@@ -1,16 +1,19 @@
-r"""The fisheye lens from the menu: a switch, an angle, a command, a saved setting.
+r"""The camera from the menu: switches, an angle, amounts, a command, saved settings.
 
-The main page gets one row for the lens (closing the "effect" block) and, only
-while it is on, a field-of-view slider in whole degrees. The client sends the
-worker a LENS command at once - nothing is rebuilt - and the setting is saved
-like every other menu choice.
+The main page gets one row for the camera (closing the "effect" block) and,
+only while it is on, the fisheye switch, a field-of-view slider in whole
+degrees while the fisheye is on, and four amounts in percent: webcam noise,
+vignette, chromatic aberration and the small sensor. The noise works without
+the fisheye (#159). The client sends the worker a LENS command at once -
+nothing is rebuilt - and the settings are saved like every other menu choice.
 
 Checked without launching anything:
 
-* the menu: with the lens off there is a switch and no slider; on, an angle
-  slider in degrees and a webcam-noise slider in percent, and its hint fits the panel in all 12
-  languages; a click on the switch asks for ("toggle", "lens"), the keyboard
-  moves the angle 5 degrees at a time;
+* the menu: with the camera off there is a switch and nothing under it; on,
+  the fisheye switch, an angle slider in degrees and the four amounts in
+  percent, and the angle's hint fits the panel in all 12 languages; with the
+  fisheye off the angle slider goes and the amounts stay; a click on a switch
+  asks for ("toggle", key), the keyboard moves the angle 5 degrees at a time;
 * the handlers (commands.py): the switch and the slider update the config
   and put exactly one LENS command on the worker's pipe - on/off and the
   angle, rounded and clamped; with no running worker nothing is written;
@@ -58,8 +61,10 @@ def _check_menu(failures: list) -> None:
     menu = _menu("en")
     if _item(menu, "lens") is None:
         failures.append("the main page has no lens switch")
-    if _item(menu, "lens_fov") is not None or _item(menu, "lens_noise") is not None:
-        failures.append("the angle or noise slider is on screen while the lens is off")
+    under = ("lens_bend", "lens_fov", "lens_noise", "lens_vignette", "lens_aberration",
+             "lens_sensor")
+    if any(_item(menu, key) is not None for key in under):
+        failures.append("a camera control is on screen while the camera is off")
     for lang in sorted(STRINGS):
         menu = _menu(lang, lens=True, lens_fov=125.0)
         slider = _item(menu, "lens_fov")
@@ -72,16 +77,34 @@ def _check_menu(failures: list) -> None:
         if noise is None or noise.extra.get("value_text") != "30%":
             failures.append(f"{lang}: the noise slider is missing or wrong: "
                             f"{noise and noise.extra.get('value_text')!r}")
+        if _item(menu, "lens_bend") is None:
+            failures.append(f"{lang}: the camera is on and there is no fisheye switch")
+        for key in ("lens_vignette", "lens_aberration", "lens_sensor"):
+            amount = _item(menu, key)
+            if amount is None or amount.extra.get("value_text") != "0%":
+                failures.append(f"{lang}: the {key} slider is missing or wrong: "
+                                f"{amount and amount.extra.get('value_text')!r}")
         hint = str(slider.extra.get("hint") or "")
         width = menu._small_font.size(hint)[0]
         if not hint or width > slider.rect.w:
             failures.append(f"{lang}: the angle hint ({width} px) does not fit the "
                             f"{slider.rect.w} px row: {hint!r}")
+    flat = _menu("en", lens=True, lens_bend=False)
+    if _item(flat, "lens_fov") is not None:
+        failures.append("the angle slider is on screen while the fisheye is off")
+    if _item(flat, "lens_noise") is None:
+        failures.append("with the fisheye off the noise slider went too (#159)")
     menu = _menu("en", lens=True, lens_fov=110.0)
     switch = _item(menu, "lens")
     actions = menu._activate_item(switch)
     if actions != [("toggle", "lens")]:
         failures.append(f"activating the lens switch asked for {actions}")
+    actions = menu._activate_item(_item(menu, "lens_bend"))
+    if actions != [("toggle", "lens_bend")]:
+        failures.append(f"activating the fisheye switch asked for {actions}")
+    stepped = menu._step_slider(_item(menu, "lens_vignette"), +1)
+    if stepped != [("lens_vignette", 0.05)]:
+        failures.append(f"one keyboard step of the vignette gave {stepped}")
     slider = _item(menu, "lens_fov")
     stepped = menu._step_slider(slider, +1)
     if stepped != [("lens_fov", 115.0)]:
@@ -112,19 +135,30 @@ def _check_commands(failures: list) -> None:
     commands.apply_menu_action(st, ("lens_fov", 133.6))
     commands.apply_menu_action(st, ("lens_fov", 900))
     commands.apply_menu_action(st, ("lens_noise", 0.55))
+    commands.apply_menu_action(st, ("toggle", "lens_bend"))
+    commands.apply_menu_action(st, ("lens_vignette", 0.4))
+    commands.apply_menu_action(st, ("lens_aberration", 7))
+    commands.apply_menu_action(st, ("lens_sensor", 0.25))
     commands.apply_menu_action(st, ("toggle", "lens"))
     size = struct.calcsize(protocol.LENS_FMT)
     data = worker.stdin.getvalue()
     sent = [struct.unpack(protocol.LENS_FMT, data[i:i + size])
             for i in range(0, len(data), size)]
-    got = [(flags & protocol.LENS_FLAG_ON, round(fov), round(noise, 2))
+    got = [(flags & protocol.LENS_FLAG_ON, (flags & protocol.LENS_FLAG_BEND) >> 1,
+            round(fov), round(noise, 2), (flags >> 8) & 255, (flags >> 16) & 255,
+            (flags >> 24) & 255)
            for _m, flags, fov, noise, _p in sent]
     print(f"    commands sent: {got}")
     top = int(settings_io.LENS_FOV_MAX)
-    want = [(1, 110, 0.3), (1, 134, 0.3), (1, top, 0.3), (1, top, 0.55), (0, top, 0.55)]
+    want = [(1, 1, 110, 0.3, 0, 0, 0), (1, 1, 134, 0.3, 0, 0, 0), (1, 1, top, 0.3, 0, 0, 0),
+            (1, 1, top, 0.55, 0, 0, 0), (1, 0, top, 0.55, 0, 0, 0),
+            (1, 0, top, 0.55, 102, 0, 0), (1, 0, top, 0.55, 102, 255, 0),
+            (1, 0, top, 0.55, 102, 255, 64), (0, 0, top, 0.55, 102, 255, 64)]
     if len(data) % size or got != want or any(m != protocol.LENS_MAGIC for m, *_ in sent):
         failures.append(f"the LENS commands on the pipe were {got}, expected {want}")
-    if st.cfg != {"lens": False, "lens_fov": settings_io.LENS_FOV_MAX, "lens_noise": 0.55}:
+    if st.cfg != {"lens": False, "lens_fov": settings_io.LENS_FOV_MAX, "lens_noise": 0.55,
+                  "lens_bend": False, "lens_vignette": 0.4, "lens_aberration": 1.0,
+                  "lens_sensor": 0.25}:
         failures.append(f"the config after the clicks is {st.cfg}")
     st.worker = None
     commands.apply_menu_action(st, ("toggle", "lens"))   # no worker: no write, no raise
@@ -148,11 +182,20 @@ def _check_config(failures: list) -> None:
             got = settings_io.load_config(path).get("lens_noise")
             if got != want:
                 failures.append(f"lens_noise {raw} loaded as {got} (expected {want})")
+        for raw, want in (('"x"', 0.0), ("NaN", 0.0), ("-1", 0.0), ("7", 1.0), ("0.42", 0.4)):
+            path.write_text('{"lens_sensor": %s}' % raw, encoding="utf-8")
+            got = settings_io.load_config(path).get("lens_sensor")
+            if got != want:
+                failures.append(f"lens_sensor {raw} loaded as {got} (expected {want})")
+        path.write_text("{}", encoding="utf-8")
+        if settings_io.load_config(path).get("lens_bend") is not True:
+            failures.append("a config without lens_bend does not keep the fisheye on")
         path.write_text("{}", encoding="utf-8")
         menu = types.SimpleNamespace(user_scale=1.0, user_height=None, state={}, mini=False,
                                      mini_rows=(), offset=(0, 0))
         st = types.SimpleNamespace(
-            cfg_path=path, cfg={"profile": "Natural", "lens": True, "lens_fov": 140.0},
+            cfg_path=path, cfg={"profile": "Natural", "lens": True, "lens_fov": 140.0,
+                                "lens_bend": False, "lens_vignette": 0.35},
             params=dict(settings_io.PROFILES["Natural"], style=1), monitor=0, lang="en",
             work_scale=1.0, split_pos=0.0, startup_menu=False, nr_small=True,
             display=types.SimpleNamespace(menu=menu))
@@ -160,6 +203,9 @@ def _check_config(failures: list) -> None:
         saved = json.loads(path.read_text(encoding="utf-8"))
         if saved.get("lens") is not True or saved.get("lens_fov") != 140.0:
             failures.append(f"the lens was saved as {saved.get('lens')}, {saved.get('lens_fov')}")
+        if saved.get("lens_bend") is not False or saved.get("lens_vignette") != 0.35:
+            failures.append(f"the camera was saved as bend={saved.get('lens_bend')}, "
+                            f"vignette={saved.get('lens_vignette')}")
 
 
 def main() -> int:
@@ -176,7 +222,8 @@ def main() -> int:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: the lens switch and angle reach the worker as one command each and are saved")
+    print("OK: the camera's switches, angle and amounts reach the worker as one command "
+          "each and are saved")
     return 0
 
 

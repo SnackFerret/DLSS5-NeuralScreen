@@ -18,6 +18,14 @@
 // look of a wide lens. A simple barrel distortion laid over a 90-degree frame
 // looks false because it does not know what angles the pixels stand for.
 //
+// The camera around it (each part on its own, 0 = off): webcam noise,
+// a vignette, lateral chromatic aberration (red and blue land at slightly
+// different radii, as through a cheap wide lens) and a small sensor's look -
+// a narrow dynamic range (crushed shadows, clipped highlights), less colour
+// and softness towards the corners. Any of them works without the fisheye
+// (#159: noise over an unbent picture), and with none of them on and the
+// fisheye off the pass does not run at all.
+//
 // Where it runs: after the network, after the HDR composite and after Frame
 // Generation - never on the network's input, the motion field or what DLSS-G
 // interpolates (its motion is rectilinear). Each export site hands its source
@@ -36,6 +44,9 @@ cbuffer LensCB : register(b0)
     float gNoise;     // webcam noise, 0..1
     uint  gSeed;      // the noise's frame: 30 a second, from the clock
     uint  gFlags;     // bit0 bend (the fisheye), bit1 a linear (scRGB) target
+    float gVignette;  // 0..1
+    float gAberration;// 0..1
+    float gSensor;    // a small sensor's look, 0..1
 };
 Texture2D<float4>   gSrc : register(t0);
 RWTexture2D<float4> gDst : register(u0);
@@ -93,7 +104,7 @@ float3 Lattice(int2 q, uint seed)
 // soft specks about the size of a 720p pixel (demosaicing and the encoder
 // smear it), mostly brightness with a little colour, and stronger in the
 // shadows, where the sensor has the fewest photons to work with.
-float3 WebcamNoise(float3 c, uint2 pos)
+float3 WebcamNoise(float3 e, uint2 pos)
 {
     float cell = max(1.0, float(gSize.y) / 720.0);
     float2 q = (float2(pos) + 0.5) / cell;
@@ -101,16 +112,26 @@ float3 WebcamNoise(float3 c, uint2 pos)
     float2 f = smoothstep(0.0, 1.0, q - 0.5 - float2(i));
     float3 n = lerp(lerp(Lattice(i, gSeed), Lattice(i + int2(1, 0), gSeed), f.x),
                     lerp(Lattice(i + int2(0, 1), gSeed), Lattice(i + int2(1, 1), gSeed), f.x), f.y);
-    // In display terms: a linear target is encoded for the measure and back.
-    bool lin = (gFlags & 2u) != 0;
-    float3 e = lin ? pow(max(c, 0.0), 1.0 / 2.2) : c;
     float y = saturate(dot(e, float3(0.2126, 0.7152, 0.0722)));
     // Measured on the worker: at 1.0 about 10 codes of spread in the shadows
     // and 4 in the light - a cheap webcam in a dim room; 0.3 is a hint of it.
     float sigma = gNoise * (0.03 + 0.12 * (1.0 - y) * (1.0 - y));
     float3 chroma = float3(n.y, -0.5 * (n.y + n.z), n.z) * 0.35;
-    e += sigma * (n.x + chroma);
-    return lin ? pow(max(e, 0.0), 2.2) : e;
+    return e + sigma * (n.x + chroma);
+}
+
+// A small sensor in display terms: the black point lifted out of the shadows
+// and the white point pulled into the highlights (what a phone-class sensor
+// with a cheap ISP does to a scene's range), a gentle S between them, and a
+// sixth of the colour gone at full strength.
+float3 SmallSensor(float3 e)
+{
+    float lo = 0.05 * gSensor, hi = 1.0 - 0.10 * gSensor;
+    float3 x = saturate((e - lo) / (hi - lo));
+    float3 s = x * x * (3.0 - 2.0 * x);
+    x = lerp(x, s, 0.35 * gSensor);
+    float y = dot(x, float3(0.2126, 0.7152, 0.0722));
+    return lerp(x, y.xxx, 0.17 * gSensor);
 }
 
 [numthreads(8, 8, 1)]
@@ -118,11 +139,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gSize.x || id.y >= gSize.y) return;
     float2 size = float2(gSize);
-    float4 c;
+    float2 centre = size * 0.5;
+    float2 d = float2(id.xy) + 0.5 - centre;
+    // 0 at the centre, 1 in the corners of the output.
+    float rn = length(d) / length(centre);
+    float2 p = float2(id.xy) + 0.5;
     if ((gFlags & 1u) != 0)
     {
-        float2 centre = size * 0.5;
-        float2 d = float2(id.xy) + 0.5 - centre;
         float r = length(d);
         float theta = r / gFish;
         if (theta >= 1.5607)       // past ~89.4 degrees: no source pixel to take
@@ -130,18 +153,51 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             gDst[id.xy] = float4(0, 0, 0, 1);
             return;
         }
-        float2 p = r > 1e-4 ? centre + d * (gRect * tan(theta) / r) : centre;
+        p = r > 1e-4 ? centre + d * (gRect * tan(theta) / r) : centre;
         if (any(p < 0.0) || any(p > size))
         {
             gDst[id.xy] = float4(0, 0, 0, 1);
             return;
         }
-        c = SampleCatmullRom(p / size, size);
     }
-    else
-        c = gSrc.Load(int3(id.xy, 0));
+    float4 c = (gFlags & 1u) != 0 ? SampleCatmullRom(p / size, size) : gSrc.Load(int3(id.xy, 0));
+    // Lateral chromatic aberration: red a little further out, blue a little
+    // further in, by up to ~0.5% of the radius - about 5 px in a 1080p corner.
+    if (gAberration > 0.0)
+    {
+        float k = 0.005 * gAberration;
+        float2 q = p - centre;
+        c.r = gSrc.SampleLevel(gLin, (centre + q * (1.0 - k)) / size, 0).r;
+        c.b = gSrc.SampleLevel(gLin, (centre + q * (1.0 + k)) / size, 0).b;
+    }
+    // Softness towards the corners: four taps a few pixels apart, blended in
+    // from the middle of the radius outwards.
+    if (gSensor > 0.0)
+    {
+        float soft = gSensor * smoothstep(0.45, 1.0, rn);
+        if (soft > 0.0)
+        {
+            float2 o = 1.8 * max(1.0, size.y / 1080.0) / size;
+            float2 uv = p / size;
+            float4 b = 0.25 * (gSrc.SampleLevel(gLin, uv + float2(o.x, o.y), 0) +
+                               gSrc.SampleLevel(gLin, uv + float2(-o.x, o.y), 0) +
+                               gSrc.SampleLevel(gLin, uv + float2(o.x, -o.y), 0) +
+                               gSrc.SampleLevel(gLin, uv + float2(-o.x, -o.y), 0));
+            c.rgb = lerp(c.rgb, b.rgb, soft);
+        }
+    }
+    // The rest in display terms: a linear target is encoded and back.
+    bool lin = (gFlags & 2u) != 0;
+    float3 e = lin ? pow(max(c.rgb, 0.0), 1.0 / 2.2) : c.rgb;
+    if (gSensor > 0.0)
+        e = SmallSensor(e);
+    // The vignette before the noise: the darkened corners are where a small
+    // sensor's noise shows most.
+    if (gVignette > 0.0)
+        e *= 1.0 - 0.65 * gVignette * smoothstep(0.30, 1.15, rn);
     if (gNoise > 0.0)
-        c.rgb = WebcamNoise(c.rgb, id.xy);
+        e = WebcamNoise(e, id.xy);
+    c.rgb = lin ? pow(max(e, 0.0), 2.2) : e;
     // The filter overshoots a little at hard edges: never below black. Above
     // one is a real value in scRGB, and a UNORM target clamps it on store.
     gDst[id.xy] = float4(max(c.rgb, 0.0), 1.0);
@@ -149,9 +205,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 )";
 
 // The lens settings, from LENS (client -> worker). Read between frames.
-static bool  g_lens_on = false;
+static bool  g_lens_on = false;      // the camera as a whole
+static bool  g_lens_bend = true;     // the fisheye within it
 static float g_lens_fov = 110.0f;   // the game's horizontal field of view, degrees
-static float g_lens_noise = 0.0f;   // webcam noise over the lens, 0..1
+static float g_lens_noise = 0.0f;   // webcam noise, 0..1
+static float g_lens_vignette = 0.0f;
+static float g_lens_aberration = 0.0f;
+static float g_lens_sensor = 0.0f;
 
 static constexpr float kLensFovMin = 30.0f;
 static constexpr float kLensFovMax = 170.0f;
@@ -182,7 +242,9 @@ static constexpr UINT kLensPairs = 256;
 
 static bool LensActive()
 {
-    return g_lens_on && !g_lens.failed && !g_submission_failed;
+    const bool any = g_lens_bend || g_lens_noise > 0.0f || g_lens_vignette > 0.0f ||
+                     g_lens_aberration > 0.0f || g_lens_sensor > 0.0f;
+    return g_lens_on && any && !g_lens.failed && !g_submission_failed;
 }
 
 static bool LensPipeline()
@@ -195,7 +257,7 @@ static bool LensPipeline()
         {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 1}};
     D3D12_ROOT_PARAMETER roots[2] = {};
     roots[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    roots[0].Constants = {0, 0, 7};
+    roots[0].Constants = {0, 0, 10};
     roots[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     roots[1].DescriptorTable = {2, ranges};
     D3D12_STATIC_SAMPLER_DESC samp = {};
@@ -286,8 +348,11 @@ static ID3D12Resource *LensApply(ID3D12GraphicsCommandList *list, ID3D12Resource
     if (dst == nullptr) return src;
     if (!s.said)
     {
-        Log("[lens] on: fisheye from a %.0f-degree field of view, webcam noise %.0f%%",
-            g_lens_fov, g_lens_noise * 100.0f);
+        char bend[48] = "no fisheye";
+        if (g_lens_bend) snprintf(bend, sizeof(bend), "fisheye from a %.0f-degree field of view", g_lens_fov);
+        Log("[lens] on: %s, webcam noise %.0f%%, vignette %.0f%%, aberration %.0f%%, small sensor %.0f%%",
+            bend, g_lens_noise * 100.0f, g_lens_vignette * 100.0f, g_lens_aberration * 100.0f,
+            g_lens_sensor * 100.0f);
         s.said = true;
     }
     const UINT w = static_cast<UINT>(desc.Width), hgt = desc.Height;
@@ -302,9 +367,12 @@ static ID3D12Resource *LensApply(ID3D12GraphicsCommandList *list, ID3D12Resource
     // specks, and Frame Generation's frames are not each given their own -
     // a sensor reads out at its own rate whatever the display does.
     const bool linear = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
-    struct { UINT size[2]; float rect, fish, noise; UINT seed, flags; } cb = {
+    struct { UINT size[2]; float rect, fish, noise; UINT seed, flags; float vignette, aberration, sensor; } cb = {
         {w, hgt}, f_rect, half_diag / corner, std::clamp(g_lens_noise, 0.0f, 1.0f),
-        static_cast<UINT>(GetTickCount64() / 33u), 1u | (linear ? 2u : 0u)};
+        static_cast<UINT>(GetTickCount64() / 33u), (g_lens_bend ? 1u : 0u) | (linear ? 2u : 0u),
+        std::clamp(g_lens_vignette, 0.0f, 1.0f), std::clamp(g_lens_aberration, 0.0f, 1.0f),
+        std::clamp(g_lens_sensor, 0.0f, 1.0f)};
+    static_assert(sizeof(cb) == 40, "LensCB is 10 constants");
 
     const UINT step = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const UINT pair = s.ring++ % kLensPairs;
@@ -342,7 +410,7 @@ static ID3D12Resource *LensApply(ID3D12GraphicsCommandList *list, ID3D12Resource
     list->SetDescriptorHeaps(1, heaps);
     list->SetComputeRootSignature(s.root.get());
     list->SetPipelineState(s.pso.get());
-    list->SetComputeRoot32BitConstants(0, 7, &cb, 0);
+    list->SetComputeRoot32BitConstants(0, 10, &cb, 0);
     D3D12_GPU_DESCRIPTOR_HANDLE gpu = s.heap->GetGPUDescriptorHandleForHeapStart();
     gpu.ptr += static_cast<UINT64>(pair) * 2u * step;
     list->SetComputeRootDescriptorTable(1, gpu);

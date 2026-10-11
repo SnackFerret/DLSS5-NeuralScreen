@@ -51,6 +51,18 @@ Scope and honesty notes:
   CPU core at 92% for the whole remote session. While the capture is lost the
   frames now come no faster than a 30 fps capture's, and it is still asked for
   again on the same schedule, so it comes back on its own.
+* **Camera: the fisheye becomes one part of it, with noise, vignette, colour
+  fringes and a small sensor (#159).** The main-page switch is now
+  **Camera**; under it, while it is on: **Fisheye** (on by default, so a 2.3.0
+  setup keeps its look) with its field of view, and four amounts, each 0 = off:
+  **Webcam noise** - now also over an unbent picture, as #159 asked -,
+  **Vignette** (darker corners), **Chromatic aberration** (red a little further
+  out and blue a little further in towards the corners, as through a cheap wide
+  lens) and **Small sensor** (a narrow range - crushed shadows, clipped
+  highlights - a little less colour, and softness towards the corners). Like
+  the fisheye they are drawn after the network and after Frame Generation and
+  land in GPU recordings, Spout and screenshots; with the camera on and every
+  part off, nothing runs.
 
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 

@@ -702,7 +702,11 @@ def send_lens_state(st) -> None:
     try:
         protocol.send_lens(worker, bool(st.cfg.get("lens", False)),
                            float(st.cfg.get("lens_fov", settings_io.LENS_FOV_DEFAULT)),
-                           float(st.cfg.get("lens_noise", settings_io.LENS_NOISE_DEFAULT)))
+                           float(st.cfg.get("lens_noise", settings_io.LENS_NOISE_DEFAULT)),
+                           bend=st.cfg.get("lens_bend", True) is not False,
+                           vignette=float(st.cfg.get("lens_vignette", 0.0)),
+                           aberration=float(st.cfg.get("lens_aberration", 0.0)),
+                           sensor=float(st.cfg.get("lens_sensor", 0.0)))
         st.lens_pid = worker.pid
     except Exception as exc:
         print(f"[main] the lens settings did not go through ({exc})", file=sys.stderr)
@@ -803,13 +807,20 @@ def apply_menu_action(st, action: tuple) -> None:
         # every frame's header.
         st.split_pos = min(1.0, max(0.0, float(action[1])))
     elif kind == "toggle" and action[1] == "lens":
-        # The fisheye lens: a command of its own, applied to the next frame,
+        # The camera: a command of its own, applied to the next frame,
         # nothing rebuilt. Written through on the menu's close like the
         # sliders; a new worker is told by the main loop (send_lens_state).
         st.cfg["lens"] = not bool(st.cfg.get("lens", False))
-        print(f"[main] fisheye lens {'on' if st.cfg['lens'] else 'off'} "
-              f"({float(st.cfg.get('lens_fov', settings_io.LENS_FOV_DEFAULT)):.0f} degrees)")
+        print(f"[main] camera {'on' if st.cfg['lens'] else 'off'}")
         st.display.menu.set_state({"lens": st.cfg["lens"]})
+        send_lens_state(st)
+    elif kind == "toggle" and action[1] == "lens_bend":
+        # The fisheye within the camera - off leaves the noise, vignette and
+        # the rest over an unbent picture (#159).
+        st.cfg["lens_bend"] = st.cfg.get("lens_bend", True) is False
+        print(f"[main] fisheye {'on' if st.cfg['lens_bend'] else 'off'} "
+              f"({float(st.cfg.get('lens_fov', settings_io.LENS_FOV_DEFAULT)):.0f} degrees)")
+        st.display.menu.set_state({"lens_bend": st.cfg["lens_bend"]})
         send_lens_state(st)
     elif kind == "lens_fov":
         try:
@@ -827,6 +838,15 @@ def apply_menu_action(st, action: tuple) -> None:
         if noise != noise:
             return
         st.cfg["lens_noise"] = round(min(1.0, max(0.0, noise)), 2)
+        send_lens_state(st)
+    elif kind in settings_io.LENS_AMOUNT_KEYS:
+        try:
+            amount = float(action[1])
+        except (TypeError, ValueError):
+            return
+        if amount != amount:
+            return
+        st.cfg[kind] = round(min(1.0, max(0.0, amount)), 2)
         send_lens_state(st)
     elif kind == "toggle" and action[1] == "boost":
         # Boost: run the network at the work resolution instead of the full

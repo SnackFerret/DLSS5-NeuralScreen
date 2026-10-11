@@ -2102,9 +2102,10 @@ struct VideoPerPassAck
     uint32_t magic, ok, reserved0, reserved1;
     int64_t pts;
 };
-// LENS: client -> worker. The fisheye lens over what the viewer sees
-// (lens.inl): flags bit0 = on, fov = the game's horizontal field of view in
-// degrees, noise = webcam noise over it, 0..1. 24 bytes like DDA1, so it is
+// LENS: client -> worker. The camera over what the viewer sees (lens.inl):
+// flags bit0 = on, bit1 = the fisheye, bits 8-15 / 16-23 / 24-31 = vignette,
+// chromatic aberration and the small sensor's look in 255ths; fov = the game's
+// horizontal field of view in degrees, noise = webcam noise, 0..1. 24 bytes like DDA1, so it is
 // the frame header's own size. Read between frames, applied to the next one;
 // nothing is recreated.
 struct VideoLensCmd
@@ -7792,6 +7793,17 @@ static int RunVideo()
             // object: the next present draws with them. A field of view that
             // is not a number keeps the last good one.
             const bool on = (g_lens_cmd.flags & 1u) != 0;
+            const bool bend = (g_lens_cmd.flags & 2u) != 0;
+            const float vignette = static_cast<float>((g_lens_cmd.flags >> 8) & 0xFFu) / 255.0f;
+            const float aberration = static_cast<float>((g_lens_cmd.flags >> 16) & 0xFFu) / 255.0f;
+            const float sensor = static_cast<float>((g_lens_cmd.flags >> 24) & 0xFFu) / 255.0f;
+            if (bend != g_lens_bend || vignette != g_lens_vignette ||
+                aberration != g_lens_aberration || sensor != g_lens_sensor)
+                g_lens.said = false;   // the next frame says what it now draws
+            g_lens_bend = bend;
+            g_lens_vignette = vignette;
+            g_lens_aberration = aberration;
+            g_lens_sensor = sensor;
             const float fov = g_lens_cmd.fov;
             if (std::isfinite(fov)) g_lens_fov = std::clamp(fov, kLensFovMin, kLensFovMax);
             if (std::isfinite(g_lens_cmd.noise))

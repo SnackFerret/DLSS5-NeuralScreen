@@ -848,6 +848,17 @@ def _validate_config(cfg: dict) -> dict:
     if not math.isfinite(noise):
         noise = LENS_NOISE_DEFAULT
     cfg["lens_noise"] = round(min(1.0, max(0.0, round(noise / 0.05) * 0.05)), 2)
+    # The rest of the camera, 0..1 in the same steps; 0 is off.
+    for key in LENS_AMOUNT_KEYS:
+        amount = cfg.get(key, 0.0)
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            _fallback(key, cfg.get(key), 0.0, "is not a number")
+            amount = 0.0
+        if not math.isfinite(amount):
+            amount = 0.0
+        cfg[key] = round(min(1.0, max(0.0, round(amount / 0.05) * 0.05)), 2)
 
     menu_height = cfg.get("menu_height")
     if menu_height is not None:
@@ -940,7 +951,7 @@ _BOOL_KEYS = (
     "pixels_in_shm", "nr_small", "nr_direct", "frame_generation",
     "record_audio", "rec_indicator", "gpu_record", "convert_audio", "spout",
     "hdr", "open_menu_on_start", "hotkeys_enabled", "keep_speed_when_hidden",
-    "lens",
+    "lens", "lens_bend",
 )
 
 # The fisheye lens (native/lens.inl): the game's horizontal field of view, in
@@ -954,6 +965,10 @@ LENS_FOV_MAX = 170.0
 # webcam"): 0.3 is grain you see in the shadows that does not read as a
 # broken signal (about 3 codes of spread there, measured on the worker).
 LENS_NOISE_DEFAULT = 0.3
+# The rest of the camera (#159 and the bodycam's first stage): the fisheye
+# is a part of it that can be off (lens_bend - on by default, so a 2.3.0
+# config keeps its look), and three amounts that start at 0, off.
+LENS_AMOUNT_KEYS = ("lens_vignette", "lens_aberration", "lens_sensor")
 
 
 def _shipped_default(key: str, fallback):
@@ -1127,6 +1142,8 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "lens": bool(cfg.get("lens", False)),
         "lens_fov": float(cfg.get("lens_fov", LENS_FOV_DEFAULT)),
         "lens_noise": float(cfg.get("lens_noise", LENS_NOISE_DEFAULT)),
+        "lens_bend": cfg.get("lens_bend", True) is not False,
+        **{key: float(cfg.get(key, 0.0)) for key in LENS_AMOUNT_KEYS},
         "nr_passes": int(cfg.get("nr_passes", 1)),
         # What passes 2..N use, only when the user actually set it. Absent from
         # the file means "every pass uses the main set" - writing a default set
@@ -1647,6 +1664,8 @@ def menu_payload(st) -> dict:
         "lens_fov": float(st.cfg.get("lens_fov", LENS_FOV_DEFAULT)),
         "lens_fov_range": (LENS_FOV_MIN, LENS_FOV_MAX),
         "lens_noise": float(st.cfg.get("lens_noise", LENS_NOISE_DEFAULT)),
+        "lens_bend": st.cfg.get("lens_bend", True) is not False,
+        **{key: float(st.cfg.get(key, 0.0)) for key in LENS_AMOUNT_KEYS},
         "nr_passes": int(st.cfg.get("nr_passes", 1)),
         "convert_busy": bool(getattr(st, "convert_busy", False)),
         "convert_status": str(getattr(st, "convert_status", "")),
