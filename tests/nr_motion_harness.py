@@ -289,6 +289,80 @@ class RotZoomScene(Scene):
         return (px - xs).astype(np.float32), (py - ys).astype(np.float32)
 
 
+class SoftFaceScene(Scene):
+    """A softly shaded oval - a face lit from one side, its shadow side a slow
+    gradient - moving slowly over a smooth, almost flat background (#160).
+
+    Little texture anywhere: the per-pixel tests that look at the input
+    (NVOFA's zero-motion test, the stabilizer's trust test) see only small
+    differences here, which is where a moving face's shadows trailed."""
+
+    name = "soft"
+
+    def __init__(self, vx=4.0, vy=1.5, axes=(150, 190), start=(560, 440),
+                 full=FULL, seed=1):
+        super().__init__(full, seed)
+        self.vx, self.vy = float(vx), float(vy)
+        self.ax, self.ay = axes
+        self.x0, self.y0 = start
+        rng = np.random.default_rng(seed)
+        low = cv2.resize(rng.uniform(95, 135, (4, 6, 3)).astype(np.float32),
+                         (self.w, self.h), interpolation=cv2.INTER_CUBIC)
+        grain = cv2.GaussianBlur(rng.normal(0, 1, (self.h, self.w)).astype(np.float32),
+                                 (0, 0), 1.2)
+        self.bg = low + (grain * (1.5 / max(1e-6, float(grain.std()))))[..., None]
+        side = 2 * max(self.ax, self.ay) + 8
+        ys, xs = np.mgrid[0:side, 0:side].astype(np.float32)
+        c = (side - 1) / 2.0
+        nx, ny = (xs - c) / self.ax, (ys - c) / self.ay
+        r2 = nx * nx + ny * ny
+        nz = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+        light = np.array([-0.55, -0.35, 0.76], np.float32)
+        light /= np.linalg.norm(light)
+        lam = np.clip(nx * light[0] + ny * light[1] + nz * light[2], 0.0, 1.0)
+        shade = 70.0 + 120.0 * lam                   # the shadow side ~70, lit ~190
+        skin = np.stack([shade * 0.86, shade * 0.95, shade * 1.08], -1)   # BGR
+        fine = cv2.GaussianBlur(np.random.default_rng(seed + 7).normal(
+            0, 1, (side, side)).astype(np.float32), (0, 0), 1.5)
+        skin += (fine * (1.0 / max(1e-6, float(fine.std()))))[..., None]
+        self.face = skin
+        self.side = side
+        self.c = c
+
+    def _pos(self, t):
+        return self.x0 + self.vx * t, self.y0 + self.vy * t
+
+    def _cover(self, t, xs, ys):
+        px, py = self._pos(t)
+        nx, ny = (xs - px) / self.ax, (ys - py) / self.ay
+        # ~1 px of anti-aliasing across the rim
+        r = np.sqrt(nx * nx + ny * ny)
+        return np.clip((1.0 - r) * min(self.ax, self.ay) + 0.5, 0.0, 1.0)
+
+    def frame(self, t):
+        px, py = self._pos(t)
+        mx = (self._xs - px + self.c).astype(np.float32)
+        my = (self._ys - py + self.c).astype(np.float32)
+        layer = cv2.remap(self.face, mx, my, cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        a = self._cover(t, self._xs, self._ys)[..., None]
+        rgb = self.bg * (1 - a) + layer * a
+        return _rgba(np.clip(rgb + 0.5, 0, 255).astype(np.uint8))
+
+    def _inside(self, t, xs, ys):
+        return self._cover(t, xs, ys) >= 0.5
+
+    def flow(self, t, xs, ys):
+        if t == 0:
+            return np.zeros_like(xs), np.zeros_like(ys)
+        inside = self._inside(t, xs, ys)
+        return (np.where(inside, -self.vx, 0.0).astype(np.float32),
+                np.where(inside, -self.vy, 0.0).astype(np.float32))
+
+    def labels(self, t, xs, ys):
+        return self._inside(t, xs, ys).astype(np.uint8)
+
+
 def make_scene(name: str, frames: int, full=FULL, seed=1, speed=None) -> Scene:
     if name == "pan":
         vx, vy = speed if speed else (3.5, 1.25)
@@ -300,6 +374,9 @@ def make_scene(name: str, frames: int, full=FULL, seed=1, speed=None) -> Scene:
         return StaticScene(frames + 2, full, seed)
     if name == "rotzoom":
         return RotZoomScene(full=full, seed=seed)
+    if name == "soft":
+        vx, vy = speed if speed else (4.0, 1.5)
+        return SoftFaceScene(vx, vy, full=full, seed=seed)
     raise ValueError(f"unknown scene {name!r}")
 
 
@@ -556,6 +633,41 @@ def stability_metrics(scene: Scene, outputs: list, skip: int = 4) -> dict:
     agg["frames_scored"] = len(rows["instab_mov"])
     agg["per_frame_instab_mov"] = rows["instab_mov"]
     return agg
+
+
+def trail_metrics(scene: Scene, on: list, off: list, skip: int = 4,
+                  behind: int = 6) -> dict:
+    """How much of a moving object's old edit is left behind it (#160).
+
+    Two runs of the same frames, one per setting. The trail is the still
+    background the object covered in the last `behind` frames and has left
+    now: there the edit should be the background's own, so |E_on - E_off| is
+    what one setting carries over from the object. The floor is the same
+    difference far from anything that moved - the shimmer one setting removes
+    and the other does not. edit_obj is the edit on the object (E_off), for
+    scale."""
+    ghost, floor, edit_obj = [], [], []
+    xs, ys = scene._xs, scene._ys
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * HALO + 1, 2 * HALO + 1))
+    for t in range(max(behind, skip), len(on)):
+        cur_in = scene.frame(t)[..., :3].astype(np.float32)
+        e_on = on[t].astype(np.float32) - cur_in
+        e_off = off[t].astype(np.float32) - cur_in
+        diff = np.abs(e_on - e_off).mean(-1)
+        now = scene.labels(t, xs, ys).astype(bool)
+        was = np.zeros_like(now)
+        for b in range(1, behind + 1):
+            was |= scene.labels(t - b, xs, ys).astype(bool)
+        band = cv2.dilate(now.astype(np.uint8), np.ones((2 * BAND + 1,) * 2, np.uint8)).astype(bool)
+        trail = was & ~band
+        near = cv2.dilate((was | now).astype(np.uint8), k).astype(bool)
+        far = ~near
+        inner = cv2.erode(now.astype(np.uint8), np.ones((2 * BAND + 1,) * 2, np.uint8)).astype(bool)
+        ghost.append(_mean(diff, trail))
+        floor.append(_mean(diff, far))
+        edit_obj.append(_mean(np.abs(e_off).mean(-1), inner))
+    return {"ghost": float(np.nanmean(ghost)), "floor": float(np.nanmean(floor)),
+            "edit_obj": float(np.nanmean(edit_obj))}
 
 
 # ---------------------------------------------------------------------------

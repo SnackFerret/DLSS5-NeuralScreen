@@ -326,6 +326,7 @@ ABOUT = {
     "test_still_capture_kept.py": "a capture that has not changed keeps its NR result instead of re-evaluating every frame",
     "test_still_capture_cap1.py": "the still-capture hold survives CAP1 before every frame (the CPU motion path)",
     "test_nr_stabilizer.py": "the NR edit is steadied over time, keeps its strength, and wrong vectors do not ghost",
+    "test_nr_stabilizer_trail.py": "the stabilizer leaves no trail of a moving soft face's edit behind it (#160)",
     "test_stab_alloc_failure.py": "stabilizer textures that do not fit are tried once per size, not on every frame",
     "test_lens.py": "the fisheye lens bends the output by the field of view on every path (with webcam noise), and off is off",
     "test_motion_convention.py": "the network gets current-to-previous motion in its own pixels: true vectors beat none and flipped",
@@ -334,6 +335,7 @@ ABOUT = {
     "test_gray_area.py": "the worker's gray map covers the whole frame at sizes that do not divide",
     "test_nvofa_still.py": "NVOFA gives an unchanged frame zero motion and runs no optical flow for it (#141)",
     "test_nvofa_zero_motion.py": "NVOFA keeps a moving object's vector on the object, not on the still background (#151)",
+    "test_nvofa_soft_motion.py": "NVOFA keeps the motion of a slowly moving, softly shaded face (#160)",
 }
 
 
@@ -588,6 +590,7 @@ TEST_GROUPS = {
         "test_fg_mode_change.py",
         "test_nvofa_still.py",
         "test_nvofa_zero_motion.py",
+        "test_nvofa_soft_motion.py",
         "test_gray_area.py",
         "test_fg_init_retry.py",
         "test_panel_raise_async.py",
@@ -598,6 +601,7 @@ TEST_GROUPS = {
         "test_still_capture_kept.py",
         "test_still_capture_cap1.py",
         "test_nr_stabilizer.py",
+        "test_nr_stabilizer_trail.py",
         "test_stab_alloc_failure.py",
         "test_preflight_user_params.py",
         "test_lens.py",

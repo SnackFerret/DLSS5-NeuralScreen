@@ -14,7 +14,14 @@
 //   conf  = that test x a sub-pixel guard
 //   H     = last frame's steadied edit at p + u, clamped to the current 3x3
 //           edit range +- 0.02
-//   D'    = H + alpha (D - H), alpha = 1 - 0.75 strength conf (0.25 at full trust)
+//   conf *= an edit guard: the network's own shimmer moves the edit by ~0.26
+//           and at most ~3 of 255, so a pixel whose edit differs from H by
+//           more than that (3..8 of 255) is a real change - a shadow that
+//           moved, a vector that missed - and passes through (#160)
+//   D'    = H + alpha (D - H), alpha = 1 - k strength conf, k = 0.75 per 1/60 s:
+//           the history's weight follows the time between the source
+//           pictures, so a 30 fps game does not carry an old edit for twice
+//           as long (#160)
 //
 // The design, its constants and the references it comes from (MPCVR-DLSS5's
 // effect stabilizer - flicker 1.44-1.59 -> 1.06-1.14 at 100% effect -, Magpie,
@@ -45,6 +52,8 @@ cbuffer StabCB : register(b0)
 static const uint STAB_FLAG_RESET = 1u;
 static const uint STAB_FLAG_NO_ZERO = 4u;
 static const uint STAB_FLAG_PASS = 8u;
+static const float EDIT_LO = 3.0 / 255.0;
+static const float EDIT_HI = 8.0 / 255.0;
 #define TILE 8
 #define HALO 2
 #define SPAN (TILE + 2 * HALO)
@@ -145,6 +154,7 @@ void CSMain(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint3 id : SV
         if (conf > 0.0)
         {
             const float3 old = clamp(h.rgb, lo - gTol, hi + gTol);
+            conf *= 1.0 - smoothstep(EDIT_LO, EDIT_HI, MaxCh(abs(edit - old)));
             const float alpha = 1.0 - (1.0 - gAlphaMin) * conf;
             steady = old + alpha * (edit - old);
         }
@@ -186,6 +196,27 @@ static bool StabRequested()
         cached = (GetEnvironmentVariableA("NS_STAB", buf, sizeof(buf)) > 0 && buf[0] == '0') ? 0 : 1;
     }
     return cached == 1;
+}
+
+// Milliseconds between the source pictures of two evaluated frames: the live
+// capture's own timestamps; 1/60 s when they are unknown (a pipe frame, an
+// unchanged capture evaluated again) or out of range. NS_STAB_FRAME_MS pins
+// it (the tests: frames through the pipe come as fast as the worker runs).
+static float StabFrameMs()
+{
+    static float pinned = -1.0f;
+    static double last_source = 0.0;
+    if (pinned < 0.0f)
+    {
+        char buf[16] = {};
+        pinned = GetEnvironmentVariableA("NS_STAB_FRAME_MS", buf, sizeof(buf)) > 0
+            ? (std::min)(100.0f, (std::max)(4.0f, static_cast<float>(atof(buf)))) : 0.0f;
+    }
+    if (pinned > 0.0f) return pinned;
+    const double now = g_capture_source_seconds;
+    const double dt = (now > 0.0 && last_source > 0.0) ? (now - last_source) * 1000.0 : 0.0;
+    if (now > 0.0) last_source = now;
+    return (dt >= 4.0 && dt <= 100.0) ? static_cast<float>(dt) : 1000.0f / 60.0f;
 }
 
 static float StabStrength()
@@ -360,7 +391,7 @@ static bool StabilizeEdit(VideoState &v, UINT nw, UINT nh, bool reset)
     cb.size[0] = nw; cb.size[1] = nh;
     cb.mv[0] = v.w; cb.mv[1] = v.hgt;
     cb.mvscale[0] = float(nw) / float(v.w); cb.mvscale[1] = float(nh) / float(v.hgt);
-    cb.alpha_min = 1.0f - 0.75f * strength;
+    cb.alpha_min = 1.0f - strength * std::pow(0.75f, StabFrameMs() * 0.06f);
     cb.tol = 0.02f;
     cb.rng[0] = 0.004f; cb.rng[1] = 0.020f; cb.rng[2] = 0.020f; cb.rng[3] = 0.080f;
     cb.sub[0] = 0.03f; cb.sub[1] = 0.12f;

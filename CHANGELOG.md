@@ -30,6 +30,20 @@ Scope and honesty notes:
 
 ---
 
+## Unreleased
+
+* **A moving face's shadows no longer trail behind it (#160).** From 2.2.0 on,
+  soft shading on a slowly moving face - a shadow side that is only a gentle
+  gradient - lagged behind the face for a fraction of a second. Two causes,
+  both fixed. NVOFA's zero-motion test took the vectors away from soft shading
+  that changes by less than a grey level a pixel per frame, so the face counted
+  as still; a vector that explains most of a change is now kept, and a still
+  background still gets none. And the edit stabilizer kept blending the old
+  shadow where its per-pixel test could not tell soft content apart; a change
+  in the edit larger than the network's own shimmer (3-8 of 255) now passes
+  through, and the history's weight follows the time between frames, so a
+  30 fps game no longer carries an old edit for twice as long as a 60 fps one.
+
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 
 * **Fisheye: a wide-lens look with the game's own field of view, and a little

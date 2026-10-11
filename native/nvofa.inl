@@ -124,7 +124,12 @@ static bool NvofaSupportsFormat(NV_OF_BUFFER_USAGE usage, DXGI_FORMAT format)
 // answers small vectors on ~47% of still pixels by itself (2600th, RTX 4080S).
 // Compared on the grey pair the flow was measured on: cur is this frame, prev
 // the reference, and current -> previous means prev(x + v) should look like
-// cur(x). The margin is one grey level per pixel.
+// cur(x). The margin is one grey level per pixel - or, where the picture
+// did change (more than half a level per pixel), a vector that explains at
+// least 40% of that change is kept: soft shading on a slowly moving face
+// changes by less than a level a pixel, and the absolute margin alone took
+// its vectors away, so its shadows trailed (#160). A still background
+// does not change, and stays at zero.
 static const char kNvofaExpand[] = R"(
 Texture2D<int2> flow : register(t0);
 Texture2D<float> cur : register(t1);
@@ -156,7 +161,8 @@ float PrevAt(float2 g) {
             moved+=abs(now-PrevAt(float2(c+int2(x,y))+vg));
             unmoved+=abs(now-prev.Load(int3(c+int2(x,y),0)));
         }
-        keep = moved + 9.0/255.0 < unmoved;
+        keep = moved + 9.0/255.0 < unmoved ||
+               (unmoved > 4.5/255.0 && moved < 0.6 * unmoved);
     }
     v=vg*float2(w,h)/float2(iw,ih);
     motion[p.xy]=!keep || dot(v,v)<.25 ? float2(0,0) : v;
