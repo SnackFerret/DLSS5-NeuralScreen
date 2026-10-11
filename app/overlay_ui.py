@@ -440,6 +440,7 @@ class OverlayMenu:
             "gpu_record": True,
             # Which corner the on-screen counter sits in, or "off" (#109).
             "fps_overlay": "off",
+            "notifications": "all",
             # What the taskbar's minimise and close buttons do (#93).
             "tray_on_minimise": False,
             "tray_on_close": False,
@@ -1884,6 +1885,12 @@ class OverlayMenu:
             segmented("theme", s["theme"], self.state.get("theme", "light"),
                       list(THEME_NAMES),
                       [s[f"theme_{t}"] for t in THEME_NAMES])
+            # Which pop-ups show (#157): all, only the errors, none. A hidden
+            # one still goes to the log.
+            segmented("notifications", s["notifications"],
+                      str(self.state.get("notifications", "all")),
+                      ["all", "errors", "none"],
+                      [s["notify_all"], s["notify_errors"], s["notify_none"]])
             # No extra gap here: segmented() already ends with one, and
             # section() opens with its own - three stacked was a hole
             # (user, 13.09: the padding below is excessive).
@@ -3082,6 +3089,11 @@ class OverlayMenu:
             per_pass["style"] = picked
             self.state["nr_pass_params"] = per_pass
             return [("pass_param", "style", picked)]
+        if key == "notifications":
+            if value in ("all", "errors", "none"):
+                self.state["notifications"] = value
+                return [("notifications", value)]
+            return []
         if key == "fps_overlay":
             if value in ("off", "tl", "tr", "bl", "br"):
                 self.state["fps_overlay"] = value

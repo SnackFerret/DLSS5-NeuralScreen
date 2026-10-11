@@ -730,6 +730,7 @@ def rebuild_pipeline(st, note: str) -> None:
     # result. The worker does the same for its picture window.
     st.display.set_excluded_from_capture(st.window_hwnd is None)
     st.display.set_lang(st.lang)
+    st.display.set_alert_level(str(st.cfg.get("notifications", "all")))
     st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
     saved_theme = st.cfg.get("theme")
     if isinstance(saved_theme, str) and saved_theme in THEME_NAMES:

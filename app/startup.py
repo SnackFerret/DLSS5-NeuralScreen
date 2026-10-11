@@ -795,6 +795,7 @@ def bring_up(st) -> None:
     # (0,0) it covered the primary screen while the capture ran elsewhere.
     st.display.set_origin(*st.mon_origin)
     st.display.set_lang(st.lang)
+    st.display.set_alert_level(str(st.cfg.get("notifications", "all")))
 
     require_compatibility(st)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(

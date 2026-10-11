@@ -1226,6 +1226,14 @@ def apply_menu_action(st, action: tuple) -> None:
         # derived from the count; that strength is a setting now and the
         # seconds it cost were not worth it (user, 20.09).
         pipeline.request_apply(st, *settings_io.queued_apply(st))
+    elif kind == "notifications":
+        level = str(action[1])
+        if level not in ("all", "errors", "none"):
+            print(f"[main] invalid notification level: {action[1]!r}", file=sys.stderr)
+            return
+        st.cfg["notifications"] = level
+        st.display.set_alert_level(level)
+        print(f"[main] pop-up notifications -> {level}")
     elif kind == "fps_overlay":
         corner = str(action[1])
         if corner not in ("off", "tl", "tr", "bl", "br"):

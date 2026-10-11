@@ -78,6 +78,12 @@ Scope and honesty notes:
   the captured monitor or window, in GPU recordings by the worker and in the
   CPU fallback by the client. A hidden pointer - a game that captures the
   mouse - is not drawn; an HDR10 recording goes without it for now.
+* **Pop-up notifications: all, only the errors, or none (#157).** A new row
+  on the Program tab of the settings. **Errors** keeps the pop-ups that report
+  something going wrong (a capture or window that failed, a hotkey that is
+  taken, a recording or a save that failed, Num Lock off...) and hides the
+  rest - NR on/off, "settings applied", "recording started"; **None** hides
+  every one. A hidden pop-up still goes to the log.
 
 ## v2.3.0 - 2026-10-10 - Fisheye with webcam noise, autostart that waits for the desktop, and the 2.2.0 audit fixes
 

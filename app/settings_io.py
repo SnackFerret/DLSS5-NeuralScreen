@@ -823,6 +823,10 @@ def _validate_config(cfg: dict) -> dict:
     # "false" is truthy, so `is not False` would turn it into True before
     # _BOOL_KEYS could read it as the off it spells. Leave the raw value to
     # that loop and only decide the default where the value is consumed.
+    if cfg.get("notifications", "all") not in ("all", "errors", "none"):
+        _fallback("notifications", cfg.get("notifications"), "all",
+                  "is not one of all/errors/none")
+        cfg["notifications"] = "all"
     if cfg.get("fps_overlay") not in ("off", "tl", "tr", "bl", "br"):
         _fallback("fps_overlay", cfg.get("fps_overlay"), "off",
                   "is not one of off/tl/tr/bl/br")
@@ -1139,6 +1143,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "gpu_record": cfg.get("gpu_record", True) is not False,
         "fps_overlay": str(cfg.get("fps_overlay", "off")),
+        "notifications": str(cfg.get("notifications", "all")),
         "lens": bool(cfg.get("lens", False)),
         "lens_fov": float(cfg.get("lens_fov", LENS_FOV_DEFAULT)),
         "lens_noise": float(cfg.get("lens_noise", LENS_NOISE_DEFAULT)),
@@ -1660,6 +1665,7 @@ def menu_payload(st) -> dict:
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "gpu_record": st.cfg.get("gpu_record", True) is not False,
         "fps_overlay": str(st.cfg.get("fps_overlay", "off")),
+        "notifications": str(st.cfg.get("notifications", "all")),
         "lens": bool(st.cfg.get("lens", False)),
         "lens_fov": float(st.cfg.get("lens_fov", LENS_FOV_DEFAULT)),
         "lens_fov_range": (LENS_FOV_MIN, LENS_FOV_MAX),

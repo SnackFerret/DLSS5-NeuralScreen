@@ -381,6 +381,41 @@ def _assemble_tiles(t: float, w: int, h: int) -> list:
     return tiles
 
 
+#: The notification setting (#157): every pop-up, only the errors, or none.
+ALERT_LEVELS = ("all", "errors", "none")
+#: The pop-ups that report something going wrong - what "errors" keeps. By
+#: their i18n keys, matched in every language (a formatted one with its
+#: placeholders standing for anything), plus the two that are not translated.
+ALERT_ERROR_KEYS = (
+    "action_failed", "autostart_err", "convert_err_denied", "convert_failed",
+    "convert_refused", "diagnostics_failed", "fg_fail", "fs_active",
+    "gpu_nr_fail", "gpu_reverted", "gpu_split", "hotkey_bad", "hotkey_in_use",
+    "hotkey_taken", "mon_fail", "motion_fallback", "numlock_off",
+    "rec_save_fail", "record_failed_stage", "save_fail", "shot_fail",
+    "tray_missing", "win_fail", "win_none",
+)
+_ALERT_ERROR_LITERALS = (r"REC ERROR.*", r"No frame yet")
+_error_patterns: "list | None" = None
+
+
+def is_error_alert(text: str) -> bool:
+    """Whether a pop-up's text is one of the error pop-ups, in any language."""
+    global _error_patterns
+    if _error_patterns is None:
+        import re
+        from i18n import STRINGS
+        found = [re.compile(p, re.S) for p in _ALERT_ERROR_LITERALS]
+        for table in STRINGS.values():
+            for key in ALERT_ERROR_KEYS:
+                value = table.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts = re.split(r"\{[^{}]*\}", value.strip())
+                    found.append(re.compile(".*?".join(re.escape(x) for x in parts), re.S))
+        _error_patterns = found
+    text = str(text).strip()
+    return any(p.fullmatch(text) for p in _error_patterns)
+
+
 class Display:
     """Fullscreen borderless window that renders frames + branded HUD."""
 
@@ -2204,6 +2239,10 @@ class Display:
         """Update HUD data: fps, status, resolution, params, frames."""
         self._hud = dict(data)
 
+    def set_alert_level(self, level: str) -> None:
+        """Which pop-ups show: "all", "errors" or "none" (#157)."""
+        self.alert_level = level if level in ALERT_LEVELS else "all"
+
     def alert(self, text: str, duration: float = 2.5) -> None:
         """Show a pop-up alert at the top of the SCREEN (amber border).
 
@@ -2218,7 +2257,15 @@ class Display:
         thing the menu already does for the same reason - it would be
         clipped by the window bounds otherwise - through the same two
         calls, which have been carrying the mode switch since 1.6.
+
+        The notification setting (#157) can hide them - all but the errors,
+        or every one; a hidden one still goes to the log, so a diagnostic
+        package says what the screen did not.
         """
+        level = getattr(self, "alert_level", "all")
+        if level != "all" and (level == "none" or not is_error_alert(text)):
+            print(f"[main] notice not shown (notifications: {level}): {text}")
+            return
         self._alerts.append((text, time.monotonic() + duration))
 
     def _fill_around(self, keep: "pygame.Rect") -> None:

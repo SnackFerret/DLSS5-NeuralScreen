@@ -633,7 +633,7 @@ _SETTINGS_KEYS = (
     # counter was, or how big the panel had been made. The section exists to
     # answer "how was the program configured" and had quietly stopped
     # answering it for anything new (found in a reporter's package, #96).
-    "nr_direct", "nr_passes", "residual_strength", "fps_overlay",
+    "nr_direct", "nr_passes", "residual_strength", "fps_overlay", "notifications",
     # The camera bends and tints the whole picture: a report of "everything
     # is warped / clicks miss / the corners are dark" is answered by these.
     "lens", "lens_fov", "lens_noise", "lens_bend", "lens_vignette",
